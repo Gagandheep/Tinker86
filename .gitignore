@@ -1,0 +1,10 @@
+*.out
+*.asm
+*.exe
+*.obj
+DOSBOX.LOG
+dict.txt
+.run.bat
+.idea
+__pycache__
+.vscode
