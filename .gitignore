@@ -8,3 +8,4 @@ dict.txt
 .idea
 __pycache__
 .vscode
+tests/data
