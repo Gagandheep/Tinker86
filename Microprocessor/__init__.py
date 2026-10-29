@@ -89,6 +89,11 @@ class Microprocessor:
         self._dispatch = [self._unimplemented] * 256
         for op_code, name in self.OPCODES.items():
             self._dispatch[op_code] = getattr(self, name)
+        # ModRM reg field -> operation for the F6/F7 and FF opcode groups
+        self._group3 = [self._test_imm, self._test_imm, self._not, self._neg] + \
+            [lambda w: self._unimplemented(0xF6 | w)] * 4
+        self._group5 = [lambda: self._inc_dec_rm(1, False), lambda: self._inc_dec_rm(1, True)] + \
+            [lambda: self._unimplemented(0xFF)] * 6
         self.reset()
 
     def reset(self, clear_memory=True):
@@ -466,6 +471,176 @@ class Microprocessor:
         if self.io_write is not None:
             self.io_write(port, self.get_reg(AX, w), w)
 
+    # ---------------------------------------------------------- arithmetic/logic
+
+    def _set_szp(self, result, w):
+        self._set_flag(ZF, result == 0)
+        self._set_flag(SF, result & (0x8000 if w else 0x80))
+        self._set_flag(PF, PARITY[result & 0xFF])
+
+    def alu(self, operation, a, b, w):
+        """operation: 0 ADD, 1 OR, 2 ADC, 3 SBB, 4 AND, 5 SUB, 6 XOR, 7 CMP. Sets flags."""
+        mask, sign = (0xFFFF, 0x8000) if w else (0xFF, 0x80)
+        if operation in (0, 2):
+            carry = 1 if operation == 2 and self.flags & CF else 0
+            result = a + b + carry
+            self._set_flag(CF, result > mask)
+            self._set_flag(OF, (a ^ result) & (b ^ result) & sign)
+            self._set_flag(AF, (a ^ b ^ result) & 0x10)
+        elif operation in (3, 5, 7):
+            borrow = 1 if operation == 3 and self.flags & CF else 0
+            result = a - b - borrow
+            self._set_flag(CF, result < 0)
+            self._set_flag(OF, (a ^ b) & (a ^ result) & sign)
+            self._set_flag(AF, (a ^ b ^ result) & 0x10)
+        else:
+            result = a | b if operation == 1 else a & b if operation == 4 else a ^ b
+            self.flags &= ~(CF | OF | AF)  # AF is undefined; the 8086 clears it
+        result &= mask
+        self._set_szp(result, w)
+        return result
+
+    def ALU_RM_R(self, op_code):  # 00-3D, low three bits 0-3: op r/m,reg / op reg,r/m
+        operation, w, d = op_code >> 3, op_code & 1, op_code & 2
+        reg = self._modrm()
+        if d:
+            result = self.alu(operation, self.get_reg(reg, w), self._get_rm(w), w)
+            if operation != 7:
+                self.set_reg(reg, result, w)
+        else:
+            result = self.alu(operation, self._get_rm(w), self.get_reg(reg, w), w)
+            if operation != 7:
+                self._set_rm(result, w)
+
+    def ALU_A_I(self, op_code):  # 04/05, 0C/0D, ... 3C/3D: op al/ax, imm
+        operation, w = op_code >> 3, op_code & 1
+        immediate = self.fetch16() if w else self.fetch8()
+        result = self.alu(operation, self.get_reg(AX, w), immediate, w)
+        if operation != 7:
+            self.set_reg(AX, result, w)
+
+    def GRP1(self, op_code):  # 80-83: op r/m, imm (83 sign-extends imm8; 82 aliases 80)
+        w = op_code & 1
+        operation = self._modrm()
+        if op_code == 0x81:
+            immediate = self.fetch16()
+        elif op_code == 0x83:
+            immediate = self.fetch_signed8() & 0xFFFF
+        else:
+            immediate = self.fetch8()
+        result = self.alu(operation, self._get_rm(w), immediate, w)
+        if operation != 7:
+            self._set_rm(result, w)
+
+    def TEST_RM_R(self, op_code):  # 84, 85
+        w = op_code & 1
+        reg = self._modrm()
+        self.alu(4, self._get_rm(w), self.get_reg(reg, w), w)
+
+    def TEST_A_I(self, op_code):  # A8, A9
+        w = op_code & 1
+        self.alu(4, self.get_reg(AX, w), self.fetch16() if w else self.fetch8(), w)
+
+    def _inc_dec(self, value, w, decrement):
+        mask, sign = (0xFFFF, 0x8000) if w else (0xFF, 0x80)
+        result = (value + (-1 if decrement else 1)) & mask
+        self._set_flag(OF, result == (sign - 1 if decrement else sign))
+        self._set_flag(AF, (value ^ result) & 0x10)
+        self._set_szp(result, w)  # CF is not affected
+        return result
+
+    def INC_DEC_R(self, op_code):  # 40-4F
+        reg = op_code & 7
+        self.regs[reg] = self._inc_dec(self.regs[reg], 1, op_code & 8)
+
+    def _inc_dec_rm(self, w, decrement):
+        self._set_rm(self._inc_dec(self._get_rm(w), w, decrement), w)
+
+    def _not(self, w):
+        self._set_rm(~self._get_rm(w) & (0xFFFF if w else 0xFF), w)
+
+    def _neg(self, w):
+        self._set_rm(self.alu(5, 0, self._get_rm(w), w), w)
+
+    def _test_imm(self, w):
+        value = self._get_rm(w)
+        self.alu(4, value, self.fetch16() if w else self.fetch8(), w)
+
+    def DAA(self, op_code):  # 27
+        self._decimal_adjust(subtract=False)
+
+    def DAS(self, op_code):  # 2F
+        self._decimal_adjust(subtract=True)
+
+    def _decimal_adjust(self, subtract):
+        al = old_al = self.regs[AX] & 0xFF
+        old_cf, old_af = self.flags & CF, self.flags & AF
+        sign = -1 if subtract else 1
+        if (al & 0x0F) > 9 or self.flags & AF:
+            al = (al + 6 * sign) & 0xFF
+            self.flags |= AF
+        else:
+            self.flags &= ~AF
+        # measured on hardware: the second adjustment threshold is 0x9F when AF was set
+        if old_al > (0x9F if old_af else 0x99) or old_cf:
+            al = (al + 0x60 * sign) & 0xFF
+            self.flags |= CF
+        else:
+            self.flags &= ~CF
+        self.set_reg8(0, al)
+        self._set_szp(al, 0)
+
+    def AAA(self, op_code):  # 37
+        self._ascii_adjust(subtract=False)
+
+    def AAS(self, op_code):  # 3F
+        self._ascii_adjust(subtract=True)
+
+    def _ascii_adjust(self, subtract):
+        al, ah = self.regs[AX] & 0xFF, self.regs[AX] >> 8
+        if (al & 0x0F) > 9 or self.flags & AF:
+            al = (al - 6 if subtract else al + 6) & 0xFF
+            ah = (ah - 1 if subtract else ah + 1) & 0xFF
+            self.flags |= AF | CF
+        else:
+            self.flags &= ~(AF | CF)
+        self.regs[AX] = (ah << 8) | (al & 0x0F)
+
+    def AAM(self, op_code):  # D4 ib
+        base = self.fetch8()
+        al = self.regs[AX] & 0xFF
+        if base == 0:
+            # measured on hardware: flags are set as for a zero logic result before the trap
+            self.flags &= ~(CF | OF | AF)
+            self._set_szp(0, 0)
+            self.interrupt(0)
+            return
+        self.regs[AX] = ((al // base) << 8) | (al % base)
+        self._set_szp(al % base, 0)
+
+    def AAD(self, op_code):  # D5 ib
+        base = self.fetch8()
+        al, ah = self.regs[AX] & 0xFF, self.regs[AX] >> 8
+        al = self.alu(0, al, (ah * base) & 0xFF, 0)
+        self.regs[AX] = al
+
+    # Group handlers: the ModRM reg field selects the operation.
+
+    def GRP3(self, op_code):  # F6, F7
+        w = op_code & 1
+        operation = self._modrm()
+        self._group3[operation](w)
+
+    def GRP4(self, op_code):  # FE: INC/DEC r/m8
+        operation = self._modrm()
+        if operation > 1:
+            raise InstructionNotImplemented(op_code)  # undefined on the 8086
+        self._inc_dec_rm(0, operation)
+
+    def GRP5(self, op_code):  # FF
+        operation = self._modrm()
+        self._group5[operation]()
+
     # ------------------------------------------------- processor control group
 
     def CMC(self, op_code):  # F5
@@ -541,4 +716,19 @@ _register([
     ((0x9B,), 'WAIT'),
     (range(0xD8, 0xE0), 'ESC'),
     ((0xF4,), 'HLT'),
+    ([op for op in range(0x40) if op & 7 < 4], 'ALU_RM_R'),
+    ([op for op in range(0x40) if op & 7 in (4, 5)], 'ALU_A_I'),
+    (range(0x80, 0x84), 'GRP1'),
+    ((0x84, 0x85), 'TEST_RM_R'),
+    ((0xA8, 0xA9), 'TEST_A_I'),
+    (range(0x40, 0x50), 'INC_DEC_R'),
+    ((0x27,), 'DAA'),
+    ((0x2F,), 'DAS'),
+    ((0x37,), 'AAA'),
+    ((0x3F,), 'AAS'),
+    ((0xD4,), 'AAM'),
+    ((0xD5,), 'AAD'),
+    ((0xF6, 0xF7), 'GRP3'),
+    ((0xFE,), 'GRP4'),
+    ((0xFF,), 'GRP5'),
 ])

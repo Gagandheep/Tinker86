@@ -88,12 +88,54 @@ class Foundation(unittest.TestCase):
 
     def test_unknown_opcode_raises(self):
         cpu = Microprocessor()
-        unknown = [op for op in range(256) if cpu._dispatch[op] == cpu._unimplemented]
+        prefixes = {0x26, 0x2E, 0x36, 0x3E, 0xF0, 0xF1, 0xF2, 0xF3}
+        unknown = [op for op in range(256) if cpu._dispatch[op] == cpu._unimplemented and op not in prefixes]
         if not unknown:
             self.skipTest('every opcode is implemented')
         cpu = cpu_with([unknown[0]])
         with self.assertRaises(InstructionNotImplemented):
             cpu.step()
+
+
+
+class Arithmetic(unittest.TestCase):
+
+    def test_or_is_bitwise(self):
+        cpu = run([0x0C, 0x0C], AX=0x0003)  # or al, 0Ch
+        self.assertEqual(cpu.AL, 0x0F)
+        self.assertFalse(cpu.get_flag('CF') or cpu.get_flag('OF'))
+
+    def test_add_signed_overflow(self):
+        cpu = run([0x04, 0x01], AX=0x007F)  # add al, 1
+        self.assertEqual(cpu.AL, 0x80)
+        self.assertTrue(cpu.get_flag('OF'))
+        self.assertTrue(cpu.get_flag('SF'))
+        self.assertTrue(cpu.get_flag('AF'))
+        self.assertFalse(cpu.get_flag('CF'))
+
+    def test_sub_borrow(self):
+        cpu = run([0x2D, 0x01, 0x00], AX=0x0000)  # sub ax, 1
+        self.assertEqual(cpu.AX, 0xFFFF)
+        self.assertTrue(cpu.get_flag('CF'))
+        self.assertFalse(cpu.get_flag('OF'))
+
+    def test_inc_preserves_carry(self):
+        cpu = cpu_with([0x40], AX=0xFFFF)  # inc ax
+        cpu.set_flags(CF=True)
+        cpu.step()
+        self.assertEqual(cpu.AX, 0)
+        self.assertTrue(cpu.get_flag('CF') and cpu.get_flag('ZF'))
+
+    def test_add_word_memory_with_disp16(self):
+        cpu = cpu_with([0x01, 0x87, 0x00, 0x01], BX=0x0010, AX=0x0101)  # add [bx+100h], ax
+        cpu.write16(cpu.DS, 0x0110, 0x1000)
+        cpu.step()
+        self.assertEqual(cpu.read16(cpu.DS, 0x0110), 0x1101)
+
+    def test_daa(self):
+        cpu = run([0x27], AX=0x009D)
+        self.assertEqual(cpu.AL, 0x03)
+        self.assertTrue(cpu.get_flag('CF'))
 
 
 if __name__ == '__main__':
