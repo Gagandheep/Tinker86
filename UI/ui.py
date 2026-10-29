@@ -222,7 +222,7 @@ class UI_MainWindow:
             tableMemory.blockSignals(False)
         return func
 
-    def updateTableMemories(self):
+    def updateTableMemories(self, addresses=None):
         for i in range(self.SEGMENT_VIEWS_COUNT):
             combobox = self.tableComboBoxes[i]
             value = combobox.currentText()
@@ -298,7 +298,8 @@ class UI_MainWindow:
             item.setText("0x{:02x}".format(self.microprocessor.memory[i]))
         return func
 
-    def updateSegment(self, segment, segment_start):
+    def updateSegment(self, segment, segment_value):
+        segment_start = segment_value << 4
         for dockSegmentViewContent in self.dockSegmentViewContents:
             combobox, *_ = dockSegmentViewContent.findChildren(QtWidgets.QComboBox)
             if combobox.currentText() == segment:
