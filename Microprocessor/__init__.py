@@ -200,6 +200,17 @@ class Microprocessor:
             self.memory[(address + 1) & ADDRESS_MASK] = (data >> 8) & 0xFF
             self._dirty.append((address + 1) & ADDRESS_MASK)
 
+    # ---------------------------------------------------------- program loading
+
+    def load_program(self, path, command_tail=''):
+        """Load a DOS .EXE or .COM file the way DOS would; returns a LoadedProgram."""
+        from .program import load_program
+        program = load_program(self, path, command_tail=command_tail)
+        self.notify_all()
+        return program
+
+    load_hex_from_exe = load_program  # name used by older callers
+
     # ---------------------------------------------------------------- execution
 
     def debug(self):

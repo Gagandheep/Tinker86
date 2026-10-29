@@ -86,13 +86,8 @@ class Foundation(unittest.TestCase):
         self.assertTrue(cpu.halted)
         self.assertEqual(cpu.IP, 1)
 
-    def test_unknown_opcode_raises(self):
-        cpu = Microprocessor()
-        prefixes = {0x26, 0x2E, 0x36, 0x3E, 0xF0, 0xF1, 0xF2, 0xF3}
-        unknown = [op for op in range(256) if cpu._dispatch[op] == cpu._unimplemented and op not in prefixes]
-        if not unknown:
-            self.skipTest('every opcode is implemented')
-        cpu = cpu_with([unknown[0]])
+    def test_undefined_form_raises(self):
+        cpu = cpu_with([0xFE, 0xF8])  # FE /7 is undefined on the 8086
         with self.assertRaises(InstructionNotImplemented):
             cpu.step()
 
