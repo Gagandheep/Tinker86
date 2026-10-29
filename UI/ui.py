@@ -1,7 +1,7 @@
 from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtCore import Qt
 
-from Assembler import tasm_tlink
+from Assembler import AssemblerError, tasm_tlink
 from UI.files import File
 
 
@@ -495,20 +495,24 @@ class UI_MainWindow:
 
     def build(self):
         self.textOutput.clear()
-        tab = self.tabbedFilesWidget.widget(self.tabbedFilesWidget.currentIndex())
+        tab = self.tabbedFilesWidget.currentWidget()
+        if tab is None:
+            return False
         file = self.files[tab]
-        success = False
+        success, exe = False, None
         if self.fileSave():
             if self.dockOutput.isHidden():
                 self.dockOutput.setVisible(True)
-            success, log = tasm_tlink(file.path)
-            log = log.split('\n', 2)[-1]
+            try:
+                success, log, exe = tasm_tlink(file.path)
+            except AssemblerError as e:
+                log = f'Build failed: {e}'
             self.textOutput.setText(log)
             self.textOutput.moveCursor(QtGui.QTextCursor.End)
         file.build_success = success
-        file.exe = f'{file.path.rsplit(".", 1)[0]}.EXE' if success else None
+        file.exe = exe
         self.actionDebug.setEnabled(success)
-        self.shortcutDebug.setEnabled(True)
+        self.shortcutDebug.setEnabled(success)
         return success
 
     def debug(self):
