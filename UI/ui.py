@@ -5,12 +5,17 @@ from PyQt5.QtCore import Qt
 
 from Assembler import AssemblerError, tasm_tlink
 from Microprocessor import InstructionNotImplemented
+from Microprocessor.bios import (BIOS_DATA_SEGMENT, COLUMNS, CURSOR_POSITION, ROWS, SCAN_CODES, VIDEO_SEGMENT,
+                                 BIOSServiceNotImplemented)
+from Microprocessor.disassembler import data_byte, disassemble_memory
 from Microprocessor.dos import DOS, DOSServiceNotImplemented
 from Microprocessor.program import ProgramFormatError
 from UI.files import File
 
 SEGMENT_SIZE = 0x10000
 RUN_BATCH_STEPS = 20000
+DISASSEMBLY_BEFORE_IP = 0x80  # listing window when execution is outside the loaded program
+DISASSEMBLY_AFTER_IP = 0x400
 
 
 def parseNumber(text, bits):
@@ -118,6 +123,195 @@ class MemoryModel(QtCore.QAbstractTableModel):
         return '{:04X}:{:04X}'.format(self.segment, section * 16)
 
 
+CGA_PALETTE = ((0, 0, 0), (0, 0, 170), (0, 170, 0), (0, 170, 170), (170, 0, 0), (170, 0, 170), (170, 85, 0),
+               (170, 170, 170), (85, 85, 85), (85, 85, 255), (85, 255, 85), (85, 255, 255), (255, 85, 85),
+               (255, 85, 255), (255, 255, 85), (255, 255, 255))
+# code page 437 glyphs for the control characters 00h-1Fh
+CP437_CONTROL = ' \u263A\u263B\u2665\u2666\u2663\u2660\u2022\u25D8\u25CB\u25D9\u2642\u2640\u266A\u266B\u263C' \
+                '\u25BA\u25C4\u2195\u203C\u00B6\u00A7\u25AC\u21A8\u2191\u2193\u2192\u2190\u221F\u2194\u25B2\u25BC'
+CP437 = [CP437_CONTROL[i] if i < 32 else bytes([i]).decode('cp437') for i in range(256)]
+SPECIAL_KEYS = {
+    Qt.Key_Return: (0x0D, 0x1C), Qt.Key_Enter: (0x0D, 0x1C), Qt.Key_Backspace: (0x08, 0x0E),
+    Qt.Key_Tab: (0x09, 0x0F), Qt.Key_Escape: (0x1B, 0x01), Qt.Key_Up: (0, 0x48), Qt.Key_Down: (0, 0x50),
+    Qt.Key_Left: (0, 0x4B), Qt.Key_Right: (0, 0x4D), Qt.Key_Home: (0, 0x47), Qt.Key_End: (0, 0x4F),
+    Qt.Key_PageUp: (0, 0x49), Qt.Key_PageDown: (0, 0x51), Qt.Key_Insert: (0, 0x52), Qt.Key_Delete: (0, 0x53),
+}
+SPECIAL_KEYS.update({Qt.Key_F1 + i: (0, 0x3B + i) for i in range(10)})
+VIDEO_START = VIDEO_SEGMENT << 4
+VIDEO_END = VIDEO_START + ROWS * COLUMNS * 2
+CURSOR_ADDRESS = (BIOS_DATA_SEGMENT << 4) + CURSOR_POSITION
+
+
+def biosKey(event):
+    """(ASCII, scan code) for a Qt key event, or None for keys the PC keyboard lacks."""
+    if event.key() in SPECIAL_KEYS:
+        return SPECIAL_KEYS[event.key()]
+    text = event.text()
+    if len(text) == 1 and ord(text) < 256:
+        return ord(text), SCAN_CODES.get(text.lower(), 0)
+    return None
+
+
+class ScreenWidget(QtWidgets.QWidget):
+    """The 80x25 colour text screen at B800:0000; typed keys go to the BIOS keyboard."""
+
+    keyTyped = QtCore.pyqtSignal()
+
+    def __init__(self, microprocessor, bios, parent=None):
+        super(ScreenWidget, self).__init__(parent)
+        self.microprocessor = microprocessor
+        self.bios = bios
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.font = QtGui.QFont('monospace', 11)
+        self.font.setStyleHint(QtGui.QFont.TypeWriter)
+        metrics = QtGui.QFontMetrics(self.font)
+        self.cellWidth = metrics.horizontalAdvance('M')
+        self.cellHeight = metrics.height()
+        self.ascent = metrics.ascent()
+        self.setMinimumSize(COLUMNS * self.cellWidth + 4, ROWS * self.cellHeight + 4)
+        self.colors = [QtGui.QColor(*rgb) for rgb in CGA_PALETTE]
+
+    def sizeHint(self):
+        return self.minimumSize()
+
+    def paintEvent(self, event):
+        painter = QtGui.QPainter(self)
+        painter.fillRect(self.rect(), Qt.black)
+        painter.setFont(self.font)
+        memory = self.microprocessor.memory
+        for row in range(ROWS):
+            y = 2 + row * self.cellHeight
+            start = VIDEO_START + row * COLUMNS * 2
+            column = 0
+            while column < COLUMNS:  # draw runs of cells with the same attribute
+                attribute = memory[start + column * 2 + 1]
+                end = column
+                while end < COLUMNS and memory[start + end * 2 + 1] == attribute:
+                    end += 1
+                x = 2 + column * self.cellWidth
+                width = (end - column) * self.cellWidth
+                painter.fillRect(x, y, width, self.cellHeight, self.colors[(attribute >> 4) & 7])
+                painter.setPen(self.colors[attribute & 0x0F])
+                text = ''.join(CP437[memory[start + c * 2]] for c in range(column, end))
+                for i, char in enumerate(text):
+                    if char != ' ':
+                        painter.drawText(x + i * self.cellWidth, y + self.ascent, char)
+                column = end
+        cursorRow, cursorColumn = memory[CURSOR_ADDRESS + 1], memory[CURSOR_ADDRESS]
+        if cursorRow < ROWS and cursorColumn < COLUMNS:
+            attribute = memory[VIDEO_START + (cursorRow * COLUMNS + cursorColumn) * 2 + 1]
+            painter.fillRect(2 + cursorColumn * self.cellWidth, 2 + (cursorRow + 1) * self.cellHeight - 3,
+                             self.cellWidth, 2, self.colors[attribute & 0x0F] if attribute & 0x0F else Qt.gray)
+        if self.hasFocus():
+            painter.setPen(QtGui.QColor(255, 210, 90))
+            painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
+
+    def keyPressEvent(self, event):
+        key = biosKey(event)
+        if key is None:
+            super(ScreenWidget, self).keyPressEvent(event)
+            return
+        self.bios.keyboard.push(*key)
+        self.keyTyped.emit()
+
+    def focusInEvent(self, event):
+        self.update()
+        super(ScreenWidget, self).focusInEvent(event)
+
+    def focusOutEvent(self, event):
+        self.update()
+        super(ScreenWidget, self).focusOutEvent(event)
+
+
+class DisassemblyModel(QtCore.QAbstractTableModel):
+    """Linear disassembly of part of the code segment, with breakpoints and the current instruction."""
+
+    COLUMNS = ('', 'Address', 'Bytes', 'Instruction')
+
+    def __init__(self, microprocessor, breakpoints, parent=None):
+        super(DisassemblyModel, self).__init__(parent)
+        self.microprocessor = microprocessor
+        self.breakpoints = breakpoints  # set of physical addresses, shared with the window
+        self.rows = []
+        self.rowByOffset = {}
+        self.segment = None
+        self.window = (0, 0)
+        self.current = None  # offset of the next instruction
+        self.dirty = True
+
+    def physical(self, offset):
+        return self.microprocessor.physical_address(self.segment, offset)
+
+    def covers(self, addresses):
+        start, end = self.physical(self.window[0]), self.physical(self.window[0]) + self.window[1] - self.window[0]
+        return any(start <= address < end for address in addresses)
+
+    def rebuild(self, segment, start, end, anchor):
+        """Disassemble [start, end) of segment, making sure anchor starts an instruction."""
+        self.beginResetModel()
+        self.segment = segment
+        self.window = (start, end)
+        self.rows = []
+        offset = start
+        while offset < end:
+            instruction = disassemble_memory(self.microprocessor, segment, offset)
+            if offset < anchor < offset + instruction.length:
+                # execution enters this instruction in the middle: show the bytes before it as data
+                for o in range(offset, anchor):
+                    self.rows.append(data_byte(o, self.microprocessor.read8(segment, o)))
+                offset = anchor
+                continue
+            self.rows.append(instruction)
+            offset += instruction.length
+        self.rowByOffset = {row.offset: i for i, row in enumerate(self.rows)}
+        self.dirty = False
+        self.endResetModel()
+
+    def setCurrent(self, offset):
+        previous, self.current = self.current, offset
+        for o in (previous, offset):
+            self.offsetChanged(o)
+
+    def offsetChanged(self, offset):
+        row = self.rowByOffset.get(offset)
+        if row is not None:
+            self.dataChanged.emit(self.index(row, 0), self.index(row, len(self.COLUMNS) - 1))
+
+    def rowCount(self, parent=QtCore.QModelIndex()):
+        return len(self.rows)
+
+    def columnCount(self, parent=QtCore.QModelIndex()):
+        return len(self.COLUMNS)
+
+    def data(self, index, role=Qt.DisplayRole):
+        if not index.isValid():
+            return None
+        row = self.rows[index.row()]
+        breakpoint = self.physical(row.offset) in self.breakpoints
+        if role == Qt.DisplayRole:
+            column = index.column()
+            if column == 0:
+                return '\u25CF' if breakpoint else ''
+            if column == 1:
+                return '{:04X}:{:04X}'.format(self.segment, row.offset)
+            if column == 2:
+                return row.data.hex(' ').upper()
+            return row.text
+        if role == Qt.ForegroundRole and index.column() == 0:
+            return QtGui.QBrush(QtGui.QColor(200, 0, 0))
+        if role == Qt.BackgroundRole:
+            if row.offset == self.current:
+                return QtGui.QBrush(QtGui.QColor(255, 210, 90))
+            if breakpoint:
+                return QtGui.QBrush(QtGui.QColor(255, 200, 200))
+        return None
+
+    def headerData(self, section, orientation, role=Qt.DisplayRole):
+        if role == Qt.DisplayRole and orientation == Qt.Horizontal:
+            return self.COLUMNS[section]
+        return None
+
+
 # noinspection PyAttributeOutsideInit,PyPep8Naming
 class UI_MainWindow:
     debugMode = False
@@ -129,8 +323,12 @@ class UI_MainWindow:
         self.microprocessor.Interface.memory_callback = self.updateTableMemories
         self.microprocessor.Interface.registers_callback = self.updateRegisters
         self.microprocessor.Interface.segments_callback = self.updateSegment
-        self.dos = DOS(microprocessor, output=self.appendProgramOutput, input=self.promptProgramInput)
+        self.dos = DOS(microprocessor, output=self.appendProgramOutput)
+        self.resumeOnInput = False  # Run paused because the program waits for a key
         self.runTimer = None
+        self.program = None
+        self.breakpoints = set()  # physical addresses
+        self.temporaryBreakpoint = None  # used by Run to Cursor
 
     def setupUI(self, MainWindow):
         MainWindow.setObjectName("MainWindow")
@@ -180,6 +378,8 @@ class UI_MainWindow:
         self.setupDockWidgetOutput(MainWindow)
         self.setupDockWidgetRegisterView(MainWindow)
         self.setupDockWidgetSegmentViews(MainWindow)
+        self.setupDockWidgetDisassembly(MainWindow)
+        self.setupDockWidgetScreen(MainWindow)
 
     def setupDockWidgetOutput(self, MainWindow):
         self.dockOutput = QtWidgets.QDockWidget(MainWindow)
@@ -280,6 +480,105 @@ class UI_MainWindow:
             MainWindow.tabifyDockWidget(self.dockOutput, dockSegmentView)
             self.showSegment(i)
 
+    def setupDockWidgetDisassembly(self, MainWindow):
+        self.dockDisassembly = QtWidgets.QDockWidget(MainWindow)
+        self.dockDisassembly.setObjectName('dockDisassembly')
+        self.dockDisassembly.setWindowTitle('Disassembly')
+        self.dockDisassembly.setAllowedAreas(QtCore.Qt.AllDockWidgetAreas)
+        self.disassemblyModel = DisassemblyModel(self.microprocessor, self.breakpoints, self.dockDisassembly)
+        self.tableDisassembly = QtWidgets.QTableView(self.dockDisassembly)
+        self.tableDisassembly.setModel(self.disassemblyModel)
+        self.tableDisassembly.setFont(QtGui.QFont('monospace', 10))
+        self.tableDisassembly.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.tableDisassembly.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.tableDisassembly.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.tableDisassembly.verticalHeader().setVisible(False)
+        self.tableDisassembly.verticalHeader().setDefaultSectionSize(20)
+        self.tableDisassembly.setShowGrid(False)
+        header = self.tableDisassembly.horizontalHeader()
+        header.setSectionResizeMode(0, QtWidgets.QHeaderView.Fixed)
+        header.resizeSection(0, 24)
+        header.resizeSection(1, 90)
+        header.resizeSection(2, 110)
+        header.setStretchLastSection(True)
+        self.tableDisassembly.doubleClicked.connect(lambda index: self.toggleBreakpoint(index.row()))
+        self.dockDisassembly.setWidget(self.tableDisassembly)
+        MainWindow.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.dockDisassembly)
+        self.dockDisassembly.setVisible(False)
+
+    def setupDockWidgetScreen(self, MainWindow):
+        self.dockScreen = QtWidgets.QDockWidget(MainWindow)
+        self.dockScreen.setObjectName('dockScreen')
+        self.dockScreen.setWindowTitle('Screen')
+        self.dockScreen.setAllowedAreas(QtCore.Qt.AllDockWidgetAreas)
+        self.screen = ScreenWidget(self.microprocessor, self.dos.bios, self.dockScreen)
+        self.screen.keyTyped.connect(self.keyTyped)
+        scroll = QtWidgets.QScrollArea(self.dockScreen)
+        scroll.setWidget(self.screen)
+        scroll.setAlignment(Qt.AlignCenter)
+        self.dockScreen.setWidget(scroll)
+        MainWindow.addDockWidget(QtCore.Qt.BottomDockWidgetArea, self.dockScreen)
+        MainWindow.tabifyDockWidget(self.dockOutput, self.dockScreen)
+        self.dockScreen.setVisible(False)
+
+    def keyTyped(self):
+        if self.resumeOnInput and self.debugMode:
+            self.resumeOnInput = False
+            self.run()
+
+    def disassemblyWindow(self):
+        """The (start, end) offsets of the code segment to list."""
+        cpu = self.microprocessor
+        base = cpu.CS << 4
+        here = base + cpu.IP
+        if self.program is not None:
+            start, end = self.program.image_range
+            if start <= here < end:
+                return max(0, start - base), min(0x10000, end - base)
+        return max(0, cpu.IP - DISASSEMBLY_BEFORE_IP), min(0x10000, cpu.IP + DISASSEMBLY_AFTER_IP)
+
+    def refreshDisassembly(self):
+        if not self.debugMode:
+            return
+        cpu, model = self.microprocessor, self.disassemblyModel
+        window = self.disassemblyWindow()
+        if model.dirty or model.segment != cpu.CS or not window[0] <= cpu.IP < window[1] \
+                or window != model.window or cpu.IP not in model.rowByOffset:
+            model.rebuild(cpu.CS, window[0], window[1], cpu.IP)
+        model.setCurrent(cpu.IP)
+        row = model.rowByOffset.get(cpu.IP)
+        if row is not None:
+            self.tableDisassembly.scrollTo(model.index(row, 0), QtWidgets.QAbstractItemView.EnsureVisible)
+
+    def selectedDisassemblyRow(self):
+        index = self.tableDisassembly.currentIndex()
+        return index.row() if index.isValid() else None
+
+    def toggleBreakpoint(self, row=None):
+        if type(row) is bool or row is None:
+            row = self.selectedDisassemblyRow()
+        if row is None or not 0 <= row < len(self.disassemblyModel.rows):
+            return
+        offset = self.disassemblyModel.rows[row].offset
+        address = self.disassemblyModel.physical(offset)
+        if address in self.breakpoints:
+            self.breakpoints.remove(address)
+        else:
+            self.breakpoints.add(address)
+        self.disassemblyModel.offsetChanged(offset)
+
+    def clearBreakpoints(self):
+        self.breakpoints.clear()
+        self.disassemblyModel.beginResetModel()
+        self.disassemblyModel.endResetModel()
+
+    def runToCursor(self):
+        row = self.selectedDisassemblyRow()
+        if row is None or not self.debugMode:
+            return
+        self.temporaryBreakpoint = self.disassemblyModel.physical(self.disassemblyModel.rows[row].offset)
+        self.run()
+
     def showSegment(self, view):
         register = self.microprocessor.Interface.segments[self.tableComboBoxes[view].currentText()]
         segment = getattr(self.microprocessor, register)
@@ -287,8 +586,13 @@ class UI_MainWindow:
             self.memoryModels[view].setSegment(segment)
 
     def updateTableMemories(self, addresses=None):
+        if addresses is None or self.disassemblyModel.covers(addresses):
+            self.disassemblyModel.dirty = True
         if self.isRunning():
             return
+        if addresses is None or any(VIDEO_START <= a < VIDEO_END or a in (CURSOR_ADDRESS, CURSOR_ADDRESS + 1)
+                                    for a in addresses):
+            self.screen.update()
         for i, model in enumerate(self.memoryModels):
             if addresses is None:
                 self.showSegment(i)
@@ -311,7 +615,12 @@ class UI_MainWindow:
     def updateStatus(self):
         if self.debugMode:
             cpu = self.microprocessor
-            state = 'halted' if cpu.halted else 'running' if self.isRunning() else 'paused'
+            if cpu.halted:
+                state = 'halted'
+            elif cpu.waiting_for_input:
+                state = 'waiting for keyboard input (type in the Screen view)'
+            else:
+                state = 'running' if self.isRunning() else 'paused'
             self.statusbar.showMessage(f'CS:IP = {cpu.CS:04X}:{cpu.IP:04X}   {state}')
 
     def setupActions(self, MainWindow):
@@ -333,13 +642,20 @@ class UI_MainWindow:
         self.actionDebug = action('debug-run', 'Debug', self.debug, 'F8')
         self.actionStep = action('go-next', 'Step', self.step, 'F10')
         self.actionRun = action('media-playback-start', 'Run', self.run, 'F5')
-        self.actionStop = action('media-playback-pause', 'Pause', self.stop, 'Shift+F5')
+        self.actionStop = action('media-playback-pause', 'Pause', self.pause, 'Shift+F5')
         self.actionExitDebug = action('process-stop', 'Exit Debug', self.exitDebug)
+        self.actionToggleBreakpoint = action('media-record', 'Toggle Breakpoint', self.toggleBreakpoint, 'F9')
+        self.actionClearBreakpoints = action('edit-clear', 'Clear Breakpoints', self.clearBreakpoints)
+        self.actionRunToCursor = action('go-jump', 'Run to Cursor', self.runToCursor, 'F4')
         self.actionAbout = action('help-about', '&About', self.about)
 
         self.actionDebug.setEnabled(False)
-        for debugAction in (self.actionStep, self.actionRun, self.actionStop, self.actionExitDebug):
+        for debugAction in self.debugActions():
             debugAction.setVisible(False)
+
+    def debugActions(self):
+        return (self.actionStep, self.actionRun, self.actionStop, self.actionRunToCursor,
+                self.actionToggleBreakpoint, self.actionClearBreakpoints, self.actionExitDebug)
 
     def setupMenuBar(self, MainWindow):
         self.menubar = QtWidgets.QMenuBar(MainWindow)
@@ -363,6 +679,8 @@ class UI_MainWindow:
         self.menuView = self.menubar.addMenu('&View')
         self.menuView.addAction(self.dockOutput.toggleViewAction())
         self.menuView.addAction(self.dockRegisterView.toggleViewAction())
+        self.menuView.addAction(self.dockDisassembly.toggleViewAction())
+        self.menuView.addAction(self.dockScreen.toggleViewAction())
         for dockSegmentView in self.dockWidgetSegmentViews:
             self.menuView.addAction(dockSegmentView.toggleViewAction())
 
@@ -370,7 +688,8 @@ class UI_MainWindow:
         self.menuAssembler.addAction(self.actionBuild)
 
         self.menuDebugger = self.menubar.addMenu('&Debugger')
-        for debugAction in (self.actionDebug, self.actionStep, self.actionRun, self.actionStop, self.actionExitDebug):
+        self.menuDebugger.addAction(self.actionDebug)
+        for debugAction in self.debugActions():
             self.menuDebugger.addAction(debugAction)
 
         self.menuHelp = self.menubar.addMenu('&Help')
@@ -517,10 +836,6 @@ class UI_MainWindow:
     def appendProgramOutput(self, text):
         self.log(text.replace('\r\n', '\n').replace('\r', ''))
 
-    def promptProgramInput(self):
-        text, ok = QtWidgets.QInputDialog.getText(self.mainWidget, 'Program input', 'The program is waiting for input:')
-        return text if ok else None
-
     def build(self):
         self.textOutput.clear()
         tab = self.tabbedFilesWidget.currentWidget()
@@ -547,9 +862,13 @@ class UI_MainWindow:
         self.toolbarFile.setVisible(not enabled)
         self.actionBuild.setVisible(not enabled)
         self.actionDebug.setVisible(not enabled)
-        for debugAction in (self.actionStep, self.actionRun, self.actionStop, self.actionExitDebug):
+        for debugAction in self.debugActions():
             debugAction.setVisible(enabled)
         self.dockRegisterView.setVisible(enabled)
+        self.dockDisassembly.setVisible(enabled)
+        self.dockScreen.setVisible(enabled)
+        if enabled:
+            self.mainWindow.resizeDocks([self.dockDisassembly], [480], Qt.Horizontal)
         for dockSegmentView in self.dockWidgetSegmentViews:
             dockSegmentView.setVisible(enabled)
         for tab in self.files:
@@ -561,6 +880,7 @@ class UI_MainWindow:
         self.actionStep.setEnabled(self.debugMode and not running and not halted)
         self.actionRun.setEnabled(self.debugMode and not running and not halted)
         self.actionStop.setEnabled(self.debugMode and running)
+        self.actionRunToCursor.setEnabled(self.debugMode and not running and not halted)
         self.updateStatus()
 
     def debug(self):
@@ -569,29 +889,46 @@ class UI_MainWindow:
         if file is None or file.exe is None:
             return
         self.textOutput.clear()
+        self.dos.set_root(os.path.dirname(os.path.abspath(file.exe)))  # drive C: for DOS file access
         try:
             program = self.microprocessor.load_program(file.exe)
         except (OSError, ProgramFormatError) as e:
             self.log(f'Cannot load {file.exe}: {e}\n')
             return
+        self.program = program
+        self.resumeOnInput = False
+        self.dos.bios.keyboard.clear()
         self.setDebugMode(True)
         self.dockRegisterView.raise_()
-        self.dockOutput.raise_()
+        self.dockScreen.raise_()
         self.log(f'Loaded {os.path.basename(file.exe)} ({program.kind}, {program.size} bytes) at '
-                 f'{self.microprocessor.CS:04X}:{self.microprocessor.IP:04X}\n')
+                 f'{self.microprocessor.CS:04X}:{self.microprocessor.IP:04X}; drive C: is {self.dos.files.root}\n')
         self.microprocessor.debug()
+        self.disassemblyModel.dirty = True
+        self.refreshDisassembly()
         self.updateHighlight()
         self.setRunControls()
 
-    def executeSteps(self, count):
-        """Run up to count instructions; reports errors and program exit. Returns False to stop."""
+    def executeSteps(self, count, useBreakpoints=False):
+        """Run up to count instructions; reports errors, breakpoints and program exit.
+        Returns False when execution should stop."""
         cpu = self.microprocessor
         try:
-            for _ in range(count):
+            for i in range(count):
                 if cpu.halted:
                     break
                 cpu.step()
-        except (InstructionNotImplemented, DOSServiceNotImplemented) as e:
+                if cpu.waiting_for_input:
+                    return False
+                if useBreakpoints:
+                    here = cpu.physical_address(cpu.CS, cpu.IP)
+                    if here == self.temporaryBreakpoint:
+                        self.temporaryBreakpoint = None
+                        return False
+                    if here in self.breakpoints:
+                        self.log(f'\nBreakpoint at {cpu.CS:04X}:{cpu.IP:04X}\n')
+                        return False
+        except (InstructionNotImplemented, DOSServiceNotImplemented, BIOSServiceNotImplemented) as e:
             self.log(f'\nStopped at {cpu.CS:04X}:{cpu.IP:04X}: {e}\n')
             return False
         if cpu.halted:
@@ -606,6 +943,7 @@ class UI_MainWindow:
         if not self.debugMode or self.isRunning():
             return
         self.executeSteps(1)
+        self.refreshDisassembly()
         self.updateHighlight()
         self.setRunControls()
 
@@ -618,18 +956,31 @@ class UI_MainWindow:
             self.setRunControls()
 
     def runBatch(self):
-        if not self.executeSteps(RUN_BATCH_STEPS):
+        keepGoing = self.executeSteps(RUN_BATCH_STEPS, useBreakpoints=True)
+        self.screen.update()  # memory callbacks are muted while running
+        if not keepGoing:
+            if self.microprocessor.waiting_for_input:
+                self.resumeOnInput = True
+                self.dockScreen.raise_()
+                self.screen.setFocus()
             self.stop()
 
     def stop(self):
         if self.isRunning():
             self.runTimer.stop()
             self.microprocessor.notify_all()
+        self.temporaryBreakpoint = None
+        self.refreshDisassembly()
         self.updateHighlight()
         self.setRunControls()
 
+    def pause(self):
+        self.resumeOnInput = False
+        self.stop()
+
     def exitDebug(self):
         self.runTimer.stop()
+        self.resumeOnInput = False
         self.setDebugMode(False)
         self.updateHighlight()
         self.statusbar.clearMessage()

@@ -5,7 +5,7 @@ arithmetic is masked explicitly to 8, 16 or 20 bits. One call to step()
 executes one complete instruction, including its prefixes (and every
 iteration of a REP-prefixed string instruction).
 """
-from .Exceptions import InstructionNotImplemented
+from .Exceptions import InstructionNotImplemented, WaitingForInput
 
 CF, PF, AF, ZF, SF, TF, IF, DF, OF = 0x001, 0x004, 0x010, 0x040, 0x080, 0x100, 0x200, 0x400, 0x800
 FLAG_BITS = {'CF': CF, 'PF': PF, 'AF': AF, 'ZF': ZF, 'SF': SF, 'TF': TF, 'IF': IF, 'DF': DF, 'OF': OF}
@@ -88,6 +88,8 @@ class Microprocessor:
         # io_read(port, word) -> value; io_write(port, value, word)
         self.io_read = None
         self.io_write = None
+        # callables run after load_program() has reset memory, e.g. to set up BIOS data
+        self.load_listeners = []
         self._dispatch = [self._unimplemented] * 256
         for op_code, name in self.OPCODES.items():
             self._dispatch[op_code] = getattr(self, name)
@@ -106,6 +108,7 @@ class Microprocessor:
         self.ip = 0
         self.flags = 0
         self.halted = False
+        self.waiting_for_input = False
         self.exit_code = None
         self.instruction_length = 0
         if clear_memory:
@@ -208,6 +211,8 @@ class Microprocessor:
         """Load a DOS .EXE or .COM file the way DOS would; returns a LoadedProgram."""
         from .program import load_program
         program = load_program(self, path, command_tail=command_tail)
+        for listener in self.load_listeners:
+            listener(self)
         self.notify_all()
         return program
 
@@ -228,10 +233,13 @@ class Microprocessor:
             self.Interface.segments_callback(name, getattr(self, register))
 
     def step(self):
-        """Execute one instruction. Returns its length in bytes (0 when halted)."""
+        """Execute one instruction. Returns its length in bytes (0 when halted, or when
+        the instruction is waiting for keyboard input and will be retried)."""
         if self.halted:
             return 0
         segments_before = list(self.sregs)
+        start_cs, start_ip = self.sregs[CS], self.ip
+        self.waiting_for_input = False
         self._seg_override = None
         self._rep = None
         self._dirty = []
@@ -248,7 +256,15 @@ class Microprocessor:
                 break
             op_code = self.fetch8()
 
-        self._dispatch[op_code](op_code)
+        try:
+            self._dispatch[op_code](op_code)
+        except WaitingForInput:
+            # services raise this before changing any state: retry the instruction later
+            self.sregs[CS], self.ip = start_cs, start_ip
+            self.waiting_for_input = True
+            self.instruction_length = 0
+            self._notify(segments_before)
+            return 0
         self.instruction_length = self._fetched
 
         if trap and self.flags & TF and not self.halted:
@@ -258,10 +274,13 @@ class Microprocessor:
         return self.instruction_length
 
     def run(self, max_steps=1_000_000):
-        """Step until the CPU halts or max_steps instructions ran. Returns the count."""
+        """Step until the CPU halts, waits for input, or max_steps instructions ran.
+        Returns the number of instructions executed."""
         steps = 0
         while not self.halted and steps < max_steps:
             self.step()
+            if self.waiting_for_input:
+                break
             steps += 1
         return steps
 

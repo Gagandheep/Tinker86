@@ -1,23 +1,41 @@
 # 8086 Simulator
 
-A desktop IDE for writing, assembling and single-stepping Intel 8086 programs.
+A desktop IDE for writing, assembling and debugging Intel 8086 programs.
 Programs are assembled with Turbo Assembler (TASM/TLINK) running inside DOSBox,
-then loaded into a Python emulation of the 8086 where you can step through them
-and inspect registers and memory.
+then loaded into a Python emulation of an 8086 PC where you can run or step
+through them, set breakpoints, and inspect the disassembly, registers, memory
+and text screen.
 
 ## Features
 
 - **CPU core** (`Microprocessor/`): the complete 8086 instruction set, including
   segment-override/`REP`/`LOCK` prefixes, interrupts and the single-step trap.
   It is checked against hardware-captured test vectors (see [Testing](#testing)).
+- **Disassembler** (`Microprocessor/disassembler.py`): TASM-style output for the
+  debugger; a second output style reproduces the test suite's instruction names
+  for all 3,064,000 vectors.
 - **Program loading**: DOS `.EXE` (MZ, with relocations and a PSP) and `.COM` files.
-- **DOS services**: `INT 20h` and the common `INT 21h` functions: character/string
-  output (02h, 09h), keyboard input (01h, 06h, 07h, 08h, 0Ah), get/set interrupt
-  vector (25h, 35h), date/time (2Ah, 2Ch), version (30h) and exit (00h, 4Ch).
-  Program output appears in the Log dock; input is asked for in a dialog.
-- **Debugger UI**: Step (F10), Run (F5), Pause (Shift+F5), editable register
-  table, four memory views (one per segment register) with the next instruction
-  highlighted, and the current `CS:IP` in the status bar.
+- **BIOS** (`Microprocessor/bios.py`): an 80×25 colour text screen at
+  `B800:0000` (programs may also write video memory directly), `INT 10h` video
+  (00h–03h, 05h–0Ah, 0Eh, 0Fh, 13h), `INT 16h` keyboard (00h–02h, 10h–12h),
+  `INT 11h`, `INT 12h` and `INT 1Ah` (ticks, RTC time and date).
+- **DOS** (`Microprocessor/dos.py`, `dosfs.py`): `INT 20h` and `INT 21h`
+  - console: 01h, 02h, 06h–0Ch
+  - files: create/open/close/read/write/seek (3Ch–42h), delete (41h), rename
+    (56h), attributes (43h), IOCTL device info (44h/00h)
+  - directories: 39h–3Bh, 47h; find first/next (4Eh, 4Fh) with DTA (1Ah, 2Fh)
+  - drives (0Eh, 19h), memory (48h–4Ah), vectors (25h, 35h), date/time (2Ah,
+    2Ch), version (30h), exit (00h, 4Ch)
+
+  Drive C: is the program's folder; paths cannot leave it. Handles 0–2 are the
+  console.
+- **Debugger UI**:
+  - Step (F10), Run (F5), Pause (Shift+F5), Run to Cursor (F4)
+  - breakpoints: F9 or double-click in the Disassembly view
+  - editable register table, four memory views (one per segment register)
+  - Screen view: program output appears there, and keys typed into it go to
+    the program. When a program waits for a key, Run pauses and resumes as
+    soon as you type.
 
 ## Requirements
 
@@ -37,8 +55,11 @@ python main.py
 1. Open or write an `.asm` file (see `examples/hello.asm`). DOS tools need file
    names of at most 8 characters without spaces.
 2. **Build** (F7) runs TASM and TLINK; their output appears in the Log dock.
-3. **Debug** (F8) loads the resulting `.EXE`. Step with F10 or run with F5;
-   the log shows when the program exits and with which code.
+3. **Debug** (F8) loads the resulting `.EXE`. The Disassembly view follows
+   `CS:IP`; set breakpoints with F9 or a double-click, then Step (F10), Run (F5)
+   or Run to Cursor (F4). Program output appears in the Screen view; click it
+   and type when the program reads the keyboard. The Log shows when the program
+   exits and with which code.
 
 The emulator can also be used without the UI:
 
@@ -47,11 +68,16 @@ from Microprocessor import Microprocessor
 from Microprocessor.dos import DOS
 
 cpu = Microprocessor()
-DOS(cpu, output=print)
+dos = DOS(cpu, output=print, root='.')   # drive C: is the current directory
+dos.bios.keyboard.push_text('typed input\r')  # keys for programs that read the keyboard
 cpu.load_program('HELLO.EXE')
-cpu.run()
+cpu.run()          # returns early when the program waits for more keys
 print('exit code', cpu.exit_code)
+print(dos.bios.screen_text())
 ```
+
+`cpu.run()` stops when the program halts or needs a key that was not typed
+(`cpu.waiting_for_input`). Push more keys and call `run()` again to continue.
 
 ## Testing
 
@@ -60,6 +86,7 @@ python -m unittest discover tests     # unit, loader, assembler and UI tests
 tests/fetch_sst.sh                    # download the SingleStepTests 8088 suite once (~800 MB)
 python tests/sst_runner.py            # 300 vectors per documented opcode
 python tests/sst_runner.py --all-statuses --limit 0   # every vector, incl. undocumented opcodes
+SST_TESTS=1 python -m unittest tests.test_disassembler  # disassembler vs. the vector names
 ```
 
 [SingleStepTests/8088](https://github.com/SingleStepTests/8088) contains test
@@ -76,8 +103,11 @@ The UI tests need PyQt5 and run offscreen (`QT_QPA_PLATFORM=offscreen`).
 |---|---|
 | `main.py` | Application entry point |
 | `Microprocessor/__init__.py` | 8086 CPU core |
+| `Microprocessor/disassembler.py` | Disassembler |
 | `Microprocessor/program.py` | `.EXE`/`.COM` loader |
+| `Microprocessor/bios.py` | BIOS services, text screen, keyboard queue |
 | `Microprocessor/dos.py` | DOS `INT 20h`/`21h` services |
+| `Microprocessor/dosfs.py` | Host directory as drive C: |
 | `Assembler/__init__.py` | TASM/TLINK in DOSBox |
 | `UI/` | PyQt5 main window |
 | `tests/` | Unit tests and the SingleStepTests runner |
@@ -85,9 +115,12 @@ The UI tests need PyQt5 and run offscreen (`QT_QPA_PLATFORM=offscreen`).
 
 ## Limitations
 
-- No disassembly view or breakpoints yet; follow execution in the memory views.
-- No BIOS services (`INT 10h`, `INT 16h`, ...), no video memory display, and
-  only the DOS functions listed above. Unsupported calls stop the program with
-  a message in the log.
+- Text mode only (no graphics modes or video pages other than 0), and only the
+  BIOS/DOS functions listed above. Unsupported calls stop the program with a
+  message in the log.
+- One drive (C:). File sharing modes, file handle duplication (45h/46h),
+  FCB-based file functions and running other programs (4Bh) are not supported.
+- Breakpoints are on instruction addresses only (no data watchpoints), and the
+  debugger has no source-level view of the `.asm` file.
 - No 8087 coprocessor: `ESC` instructions decode their operand and do nothing.
 - Timing (clock cycles, prefetch queue) is not emulated.

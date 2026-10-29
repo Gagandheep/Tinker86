@@ -16,6 +16,12 @@ class LoadedProgram:
         self.load_segment = load_segment
         self.size = size
 
+    @property
+    def image_range(self):
+        """Physical (start, end) of the loaded image."""
+        start = (self.load_segment << 4) + (0x100 if self.kind == 'COM' else 0)
+        return start, start + self.size
+
     def __repr__(self):
         return (f'LoadedProgram({self.kind}, psp={self.psp_segment:04X}, '
                 f'load={self.load_segment:04X}, size={self.size})')
