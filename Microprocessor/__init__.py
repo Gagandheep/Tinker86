@@ -807,7 +807,9 @@ class Microprocessor:
                 carry = value & 1
                 value = (value >> 1) | (value & sign)
         self._set_flag(CF, carry)
-        if operation in (0, 2, 4, 6):
+        if operation == 6:
+            self.flags &= ~OF
+        elif operation in (0, 2, 4):
             self._set_flag(OF, bool(value & sign) != bool(carry))
         else:
             self._set_flag(OF, bool(value & sign) != bool(value & (sign >> 1)))
@@ -890,6 +892,46 @@ class Microprocessor:
         else:
             self.regs[AX] = ((remainder & 0xFF) << 8) | (quotient & 0xFF)
 
+    # ------------------------------------------------------ string instructions
+
+    def STRING(self, op_code):  # A4/A5 MOVS, A6/A7 CMPS, AA/AB STOS, AC/AD LODS, AE/AF SCAS
+        w = op_code & 1
+        kind = op_code & 0xFE
+        delta = 2 if w else 1
+        if self.flags & DF:
+            delta = -delta
+        if self._rep is None:
+            self._string_once(kind, w, delta)
+            return
+        # REP runs every iteration within one step; CMPS/SCAS also stop on
+        # ZF=0 (REPE, F3) or ZF=1 (REPNE, F2). Other string ops ignore ZF.
+        compares = kind in (0xA6, 0xAE)
+        while self.regs[CX]:
+            self._string_once(kind, w, delta)
+            self.regs[CX] = (self.regs[CX] - 1) & 0xFFFF
+            if compares and bool(self.flags & ZF) != (self._rep == 0xF3):
+                break
+
+    def _string_once(self, kind, w, delta):
+        source = self.sregs[self._segment(DS)]  # only the source can be overridden
+        read = self.read16 if w else self.read8
+        write = self.write16 if w else self.write8
+        si, di = self.regs[SI], self.regs[DI]
+        if kind == 0xA4:  # MOVS
+            write(self.sregs[ES], di, read(source, si))
+        elif kind == 0xA6:  # CMPS
+            self.alu(7, read(source, si), read(self.sregs[ES], di), w)
+        elif kind == 0xAA:  # STOS
+            write(self.sregs[ES], di, self.regs[AX])
+        elif kind == 0xAC:  # LODS
+            self.set_reg(AX, read(source, si), w)
+        else:  # SCAS
+            self.alu(7, self.get_reg(AX, w), read(self.sregs[ES], di), w)
+        if kind in (0xA4, 0xA6, 0xAC):
+            self.regs[SI] = (si + delta) & 0xFFFF
+        if kind != 0xAC:
+            self.regs[DI] = (di + delta) & 0xFFFF
+
     # ------------------------------------------------- processor control group
 
     def CMC(self, op_code):  # F5
@@ -920,6 +962,9 @@ class Microprocessor:
         self._modrm()
         if self._ea is not None:
             self._get_rm(1)  # the 8086 performs the memory read for the coprocessor
+
+    def SALC(self, op_code):  # D6: undocumented, AL = CF ? FFh : 00h
+        self.set_reg8(0, 0xFF if self.flags & CF else 0)
 
     def HLT(self, op_code):  # F4
         self.halted = True
@@ -965,6 +1010,7 @@ _register([
     ((0x9B,), 'WAIT'),
     (range(0xD8, 0xE0), 'ESC'),
     ((0xF4,), 'HLT'),
+    ((0xD6,), 'SALC'),
     ([op for op in range(0x40) if op & 7 < 4], 'ALU_RM_R'),
     ([op for op in range(0x40) if op & 7 in (4, 5)], 'ALU_A_I'),
     (range(0x80, 0x84), 'GRP1'),
@@ -995,4 +1041,5 @@ _register([
     ((0xCE,), 'INTO'),
     ((0xCF,), 'IRET'),
     (range(0xD0, 0xD4), 'GRP2'),
+    ((0xA4, 0xA5, 0xA6, 0xA7, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF), 'STRING'),
 ])

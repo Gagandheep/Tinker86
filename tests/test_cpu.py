@@ -218,5 +218,33 @@ class ShiftMultiplyDivide(unittest.TestCase):
         self.assertEqual(cpu.read16(cpu.SS, cpu.SP), 2)  # return address after the DIV
 
 
+
+class Strings(unittest.TestCase):
+
+    def test_rep_movsb_copies_block(self):
+        cpu = cpu_with([0xF3, 0xA4], SI=0x10, DI=0x20, CX=4)  # rep movsb
+        start = cpu.physical_address(cpu.DS, 0x10)
+        cpu.memory[start:start + 4] = b'ABCD'
+        cpu.step()
+        dest = cpu.physical_address(cpu.ES, 0x20)
+        self.assertEqual(bytes(cpu.memory[dest:dest + 4]), b'ABCD')
+        self.assertEqual((cpu.CX, cpu.SI, cpu.DI, cpu.IP), (0, 0x14, 0x24, 2))
+
+    def test_repne_scasb_finds_byte(self):
+        cpu = cpu_with([0xF2, 0xAE], DI=0, CX=10, AX=ord('C'))  # repne scasb
+        start = cpu.physical_address(cpu.ES, 0)
+        cpu.memory[start:start + 5] = b'ABCDE'
+        cpu.step()
+        self.assertEqual((cpu.DI, cpu.CX), (3, 7))
+        self.assertTrue(cpu.get_flag('ZF'))
+
+    def test_lodsw_moves_si_backwards_with_df(self):
+        cpu = cpu_with([0xAD], SI=0x10)
+        cpu.write16(cpu.DS, 0x10, 0xCAFE)
+        cpu.set_flags(DF=True)
+        cpu.step()
+        self.assertEqual((cpu.AX, cpu.SI), (0xCAFE, 0x0E))
+
+
 if __name__ == '__main__':
     unittest.main()
