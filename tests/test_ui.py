@@ -5,6 +5,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 try:
@@ -59,6 +60,43 @@ class MainWindowTests(unittest.TestCase):
         self.assertFalse(self.ui.actionStep.isEnabled())
         self.ui.exitDebug()
         self.assertFalse(self.ui.debugMode)
+
+    def test_disassembly_and_breakpoints(self):
+        self.load_hello()
+        cpu = self.window.microprocessor
+        model = self.ui.disassemblyModel
+        texts = [row.text for row in model.rows[:6]]
+        self.assertEqual(texts[:3], ['mov ax, 812h', 'mov ds, ax', 'mov dx, 0h'])
+        self.assertEqual(model.current, 0)
+        # breakpoint on 'int 21h' (row 4); Run stops there before printing
+        self.ui.toggleBreakpoint(4)
+        self.assertIn(model.physical(model.rows[4].offset), self.ui.breakpoints)
+        self.assertEqual(model.data(model.index(4, 0)), '\u25CF')
+        self.ui.run()
+        while self.ui.isRunning():
+            self.app.processEvents()
+        self.assertEqual(cpu.IP, model.rows[4].offset)
+        self.assertNotIn('Hello', self.ui.textOutput.toPlainText())
+        self.assertIn('Breakpoint at', self.ui.textOutput.toPlainText())
+        # Run continues past the breakpoint it is sitting on
+        self.ui.toggleBreakpoint(4)
+        self.ui.tableDisassembly.selectRow(6)  # second int 21h
+        self.ui.runToCursor()
+        while self.ui.isRunning():
+            self.app.processEvents()
+        self.assertEqual(cpu.IP, model.rows[6].offset)
+        self.assertIn('Hello, 8086!', self.ui.textOutput.toPlainText())
+        self.assertEqual(model.current, cpu.IP)
+
+    def test_disassembly_resyncs_when_jumping_mid_instruction(self):
+        self.load_hello()
+        cpu = self.window.microprocessor
+        cpu.IP = 1  # inside 'mov ax, ...'
+        self.ui.refreshDisassembly()
+        model = self.ui.disassemblyModel
+        self.assertEqual(model.rows[0].text, 'db 0B8h')
+        self.assertEqual(model.rows[1].offset, 1)
+        self.assertEqual(model.current, 1)
 
     def test_edit_register_and_memory(self):
         self.load_hello()

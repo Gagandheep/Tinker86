@@ -330,6 +330,16 @@ class _Decoder:
         return f'db {self.hex(op)}'
 
 
+def format_hex(value, style='tasm', digits=0):
+    """Hex number as the disassembler writes it (TASM: a leading 0 before A-F digits)."""
+    return _Decoder(None, 0, style).hex(value, digits)
+
+
+def data_byte(offset, value, style='tasm'):
+    """A one-byte 'db' pseudo instruction, for bytes that are not code."""
+    return Instruction(offset & 0xFFFF, bytes([value]), f'db {format_hex(value, style)}')
+
+
 def disassemble(read, offset, style='tasm'):
     """Disassemble one instruction. read(offset) returns the byte at that offset
     of the code segment (offsets wrap at 64 KB). Returns an Instruction."""

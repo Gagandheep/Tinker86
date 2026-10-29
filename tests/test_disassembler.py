@@ -12,7 +12,7 @@ from Microprocessor import Microprocessor  # noqa: E402
 from Microprocessor.disassembler import disassemble_bytes, disassemble_memory  # noqa: E402
 
 TESTS_DIR = os.path.join(ROOT, 'tests', 'data', '8088', 'v1')
-SAMPLE_PER_OPCODE = 50  # tests/sst_runner.py-style full check: see test_reference_names
+SAMPLE_PER_OPCODE = 50
 
 
 class TasmStyle(unittest.TestCase):
@@ -46,7 +46,8 @@ class TasmStyle(unittest.TestCase):
         self.assertEqual((instruction.text, instruction.length), ('mov al, 5h', 2))
 
 
-@unittest.skipUnless(os.path.isdir(TESTS_DIR), 'SingleStepTests data not downloaded (tests/fetch_sst.sh)')
+@unittest.skipUnless(os.path.isdir(TESTS_DIR) and os.environ.get('SST_TESTS'),
+                     'set SST_TESTS=1 after tests/fetch_sst.sh to check against the SingleStepTests names')
 class ReferenceStyle(unittest.TestCase):
 
     def test_reference_names(self):
