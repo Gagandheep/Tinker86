@@ -79,6 +79,8 @@ class Microprocessor:
     ES, CS, SS, DS = (_sreg(i) for i in range(4))
 
     def __init__(self):
+        # per-instance subclass, so callbacks set on cpu.Interface affect only this CPU
+        self.Interface = type('Interface', (Microprocessor.Interface,), {})
         self.memory = bytearray(MEMORY_SIZE)
         # interrupt number -> callable(cpu); used when the vector table entry is
         # empty, e.g. to emulate DOS services without a real DOS in memory.

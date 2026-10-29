@@ -81,6 +81,15 @@ class Foundation(unittest.TestCase):
         cpu = run([0x54], SP=0x0100)
         self.assertEqual(cpu.read16(cpu.SS, 0x00FE), 0x00FE)
 
+    def test_callbacks_are_per_instance(self):
+        first, second = Microprocessor(), Microprocessor()
+        calls = []
+        first.Interface.registers_callback = lambda: calls.append('first')
+        second.step()
+        self.assertEqual(calls, [])
+        first.step()
+        self.assertEqual(calls, ['first'])
+
     def test_hlt_stops_stepping(self):
         cpu = run([0xF4, 0x90], steps=2)
         self.assertTrue(cpu.halted)
