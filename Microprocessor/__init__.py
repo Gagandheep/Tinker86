@@ -90,8 +90,9 @@ class Microprocessor:
         for op_code, name in self.OPCODES.items():
             self._dispatch[op_code] = getattr(self, name)
         # ModRM reg field -> operation for the F6/F7 and FF opcode groups
-        self._group3 = [self._test_imm, self._test_imm, self._not, self._neg] + \
-            [lambda w: self._unimplemented(0xF6 | w)] * 4
+        self._group3 = [self._test_imm, self._test_imm, self._not, self._neg,
+                        lambda w: self._mul(w, False), lambda w: self._mul(w, True),
+                        lambda w: self._div(w, False), lambda w: self._div(w, True)]
         self._group5 = [lambda: self._inc_dec_rm(1, False), lambda: self._inc_dec_rm(1, True),
                         self._call_indirect, self._call_far_indirect, self._jmp_indirect,
                         self._jmp_far_indirect, self._push_rm, self._push_rm]
@@ -766,6 +767,129 @@ class Microprocessor:
         else:
             self.push(self._get_rm(1))
 
+    # ------------------------------------------------------ shifts and rotates
+
+    def GRP2(self, op_code):  # D0/D1: by 1, D2/D3: by CL
+        w = op_code & 1
+        operation = self._modrm()
+        count = self.regs[CX] & 0xFF if op_code & 2 else 1  # the 8086 does not mask the count
+        value = self._get_rm(w)
+        if count == 0:
+            return
+        self._set_rm(self.shift(operation, value, count, w), w)
+
+    def shift(self, operation, value, count, w):
+        """operation: 0 ROL, 1 ROR, 2 RCL, 3 RCR, 4 SHL, 5 SHR, 6 SETMO (undocumented), 7 SAR."""
+        bits = 16 if w else 8
+        mask, sign = (1 << bits) - 1, 1 << (bits - 1)
+        carry = self.flags & CF
+        for _ in range(count):
+            if operation == 0:
+                carry = value >> (bits - 1)
+                value = ((value << 1) | carry) & mask
+            elif operation == 1:
+                carry = value & 1
+                value = (value >> 1) | (carry << (bits - 1))
+            elif operation == 2:
+                value, carry = ((value << 1) | carry) & mask, value >> (bits - 1)
+            elif operation == 3:
+                value, carry = (value >> 1) | (carry << (bits - 1)), value & 1
+            elif operation == 4:
+                carry = value >> (bits - 1)
+                value = (value << 1) & mask
+            elif operation == 5:
+                carry = value & 1
+                value >>= 1
+            elif operation == 6:
+                carry = 0
+                value = mask
+            else:
+                carry = value & 1
+                value = (value >> 1) | (value & sign)
+        self._set_flag(CF, carry)
+        if operation in (0, 2, 4, 6):
+            self._set_flag(OF, bool(value & sign) != bool(carry))
+        else:
+            self._set_flag(OF, bool(value & sign) != bool(value & (sign >> 1)))
+        if operation >= 4:
+            self._set_szp(value, w)
+            self.flags &= ~AF  # undefined; the 8086 clears it
+        return value
+
+    # ------------------------------------------------------ multiply and divide
+
+    @staticmethod
+    def _signed(value, w):
+        sign = 0x8000 if w else 0x80
+        return value - (sign << 1) if value & sign else value
+
+    def _mul(self, w, signed):
+        source = self._get_rm(w)
+        if w:
+            a, b = self.regs[AX], source
+        else:
+            a, b = self.regs[AX] & 0xFF, source
+        if signed:
+            a, b = self._signed(a, w), self._signed(b, w)
+        product = a * b
+        if self._rep is not None and signed:
+            product = -product  # 8086 quirk: a REP prefix negates the IMUL result
+        if w:
+            self.regs[AX] = product & 0xFFFF
+            self.regs[DX] = (product >> 16) & 0xFFFF
+            high, low = self.regs[DX], self.regs[AX]
+        else:
+            self.regs[AX] = product & 0xFFFF
+            high, low = self.regs[AX] >> 8, self.regs[AX] & 0xFF
+        if signed:
+            overflow = product != self._signed(low, w)
+        else:
+            overflow = high != 0
+        self._set_flag(CF, overflow)
+        self._set_flag(OF, overflow)
+
+    def _div(self, w, signed):
+        divisor = self._get_rm(w)
+        bits = 16 if w else 8
+        mask = (1 << bits) - 1
+        if w:
+            dividend = (self.regs[DX] << 16) | self.regs[AX]
+        else:
+            dividend = self.regs[AX]
+        negative_dividend = negative_divisor = False
+        if signed:
+            # the microcode divides magnitudes and fixes the signs afterwards
+            if dividend >> (2 * bits - 1):
+                dividend = (1 << (2 * bits)) - dividend
+                negative_dividend = True
+            if divisor >> (bits - 1):
+                divisor = (1 << bits) - divisor
+                negative_divisor = True
+        high = dividend >> bits
+        # overflow check: the quotient must fit, i.e. high half < divisor. The
+        # flags of this subtraction are what the divide-error trap pushes.
+        if high >= divisor:
+            self.alu(5, high, divisor, w)
+            self.interrupt(0)
+            return
+        quotient, remainder = divmod(dividend, divisor)
+        if signed:
+            if negative_dividend != negative_divisor:
+                quotient = -quotient
+            if negative_dividend:
+                remainder = -remainder
+            if self._rep is not None:
+                quotient = -quotient  # 8086 quirk: a REP prefix negates the IDIV quotient
+            limit = mask >> 1  # the 8086 rejects -128 / -32768 as a quotient
+            if not -limit <= quotient <= limit:
+                self.interrupt(0)
+                return
+        if w:
+            self.regs[AX] = quotient & 0xFFFF
+            self.regs[DX] = remainder & 0xFFFF
+        else:
+            self.regs[AX] = ((remainder & 0xFF) << 8) | (quotient & 0xFF)
+
     # ------------------------------------------------- processor control group
 
     def CMC(self, op_code):  # F5
@@ -870,4 +994,5 @@ _register([
     ((0xCD,), 'INT'),
     ((0xCE,), 'INTO'),
     ((0xCF,), 'IRET'),
+    (range(0xD0, 0xD4), 'GRP2'),
 ])

@@ -49,6 +49,25 @@ def load_state(cpu, regs, ram):
         cpu.memory[address] = value
 
 
+def pushed_flags_masks(test, expected, flag_mask):
+    """Byte masks for the FLAGS word pushed by a divide-error trap.
+
+    DIV/IDIV leave most flags undefined, and the values the 8088 pushes when
+    it traps come from its internal microcode loop. Only the defined bits of
+    that pushed word are compared, like the flags register itself.
+    """
+    if flag_mask == 0xFFFF or not test['name'].startswith(('div', 'idiv', 'aam')):
+        return {}
+    initial = test['initial']['regs']
+    if expected['cs'] == initial['cs'] and expected['ip'] == (initial['ip'] + len(test['bytes'])) & 0xFFFF:
+        return {}  # no trap
+    mask = DEFINED_FLAGS & flag_mask
+    base = expected['ss'] << 4
+    low = (base + ((expected['sp'] + 4) & 0xFFFF)) & 0xFFFFF
+    high = (base + ((expected['sp'] + 5) & 0xFFFF)) & 0xFFFFF
+    return {low: mask & 0xFF, high: (mask >> 8) | 0xF0}
+
+
 def check(cpu, test, flag_mask):
     """Return None on success, else a short description of the mismatch."""
     expected = dict(test['initial']['regs'])
@@ -66,7 +85,8 @@ def check(cpu, test, flag_mask):
             wrong.append(name)
     ram = dict(test['initial']['ram'])
     ram.update(test['final']['ram'])
-    if any(cpu.memory[address] != value for address, value in ram.items()):
+    masks = pushed_flags_masks(test, expected, flag_mask)
+    if any((cpu.memory[address] ^ value) & masks.get(address, 0xFF) for address, value in ram.items()):
         wrong.append('mem')
     return 'wrong ' + ','.join(wrong) if wrong else None
 

@@ -180,5 +180,43 @@ class ControlFlow(unittest.TestCase):
         self.assertEqual((cpu.CX, cpu.IP), (0, 2))
 
 
+
+class ShiftMultiplyDivide(unittest.TestCase):
+
+    def test_shl_by_cl(self):
+        cpu = run([0xD3, 0xE0], AX=0x4001, CX=2)  # shl ax, cl
+        self.assertEqual(cpu.AX, 0x0004)
+        self.assertTrue(cpu.get_flag('CF'))
+
+    def test_rcr_through_carry(self):
+        cpu = cpu_with([0xD0, 0xD8], AX=0x0002)  # rcr al, 1
+        cpu.set_flags(CF=True)
+        cpu.step()
+        self.assertEqual(cpu.AL, 0x81)
+        self.assertFalse(cpu.get_flag('CF'))
+
+    def test_mul_word(self):
+        cpu = run([0xF7, 0xE3], AX=0x1234, BX=0x0100)  # mul bx
+        self.assertEqual((cpu.DX, cpu.AX), (0x0012, 0x3400))
+        self.assertTrue(cpu.get_flag('CF') and cpu.get_flag('OF'))
+
+    def test_imul_byte(self):
+        cpu = run([0xF6, 0xEB], AX=0x00FE, BX=0x0003)  # imul bl: -2 * 3
+        self.assertEqual(cpu.AX, 0xFFFA)
+        self.assertFalse(cpu.get_flag('CF'))
+
+    def test_idiv_rounds_toward_zero(self):
+        cpu = run([0xF6, 0xFB], AX=0xFFF9, BX=0x0002)  # idiv bl: -7 / 2
+        self.assertEqual((cpu.AL, cpu.AH), (0xFD, 0xFF))  # -3 remainder -1
+
+    def test_divide_by_zero_raises_interrupt_0(self):
+        cpu = cpu_with([0xF6, 0xF3], AX=0x0010, BX=0)  # div bl
+        cpu.write16(0, 0, 0x1234)
+        cpu.write16(0, 2, 0x0600)
+        cpu.step()
+        self.assertEqual((cpu.CS, cpu.IP), (0x0600, 0x1234))
+        self.assertEqual(cpu.read16(cpu.SS, cpu.SP), 2)  # return address after the DIV
+
+
 if __name__ == '__main__':
     unittest.main()
