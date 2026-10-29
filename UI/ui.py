@@ -889,6 +889,7 @@ class UI_MainWindow:
         if file is None or file.exe is None:
             return
         self.textOutput.clear()
+        self.dos.set_root(os.path.dirname(os.path.abspath(file.exe)))  # drive C: for DOS file access
         try:
             program = self.microprocessor.load_program(file.exe)
         except (OSError, ProgramFormatError) as e:
@@ -901,7 +902,7 @@ class UI_MainWindow:
         self.dockRegisterView.raise_()
         self.dockScreen.raise_()
         self.log(f'Loaded {os.path.basename(file.exe)} ({program.kind}, {program.size} bytes) at '
-                 f'{self.microprocessor.CS:04X}:{self.microprocessor.IP:04X}\n')
+                 f'{self.microprocessor.CS:04X}:{self.microprocessor.IP:04X}; drive C: is {self.dos.files.root}\n')
         self.microprocessor.debug()
         self.disassemblyModel.dirty = True
         self.refreshDisassembly()
