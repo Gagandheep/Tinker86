@@ -8,3 +8,6 @@ dict.txt
 .idea
 __pycache__
 .vscode
+tests/data
+.DS_Store
+!examples/*.asm

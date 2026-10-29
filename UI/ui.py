@@ -1,8 +1,28 @@
+import os
+
 from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtCore import Qt
 
-from Assembler import tasm_tlink
+from Assembler import AssemblerError, tasm_tlink
+from Microprocessor import InstructionNotImplemented
+from Microprocessor.dos import DOS, DOSServiceNotImplemented
+from Microprocessor.program import ProgramFormatError
 from UI.files import File
+
+SEGMENT_SIZE = 0x10000
+RUN_BATCH_STEPS = 20000
+
+
+def parseNumber(text, bits):
+    """Parse 0x.., 0b.. or decimal (optionally negative) text into an unsigned value."""
+    text = text.strip()
+    if not text or text in '+-':
+        raise ValueError('empty value')
+    negative = text[0] == '-'
+    text = text.lstrip('+-')
+    base = 16 if text[1:2] in ('x', 'X') else 2 if text[1:2] in ('b', 'B') else 10
+    value = int(text, base)
+    return (-value if negative else value) & ((1 << bits) - 1)
 
 
 class RegisterDelegate(QtWidgets.QStyledItemDelegate):
@@ -25,22 +45,98 @@ class MemoryDelegate(QtWidgets.QStyledItemDelegate):
         return editor
 
 
+class MemoryModel(QtCore.QAbstractTableModel):
+    """One 64 KB segment of the CPU's memory, 16 bytes per row, read on demand."""
+
+    def __init__(self, microprocessor, parent=None):
+        super(MemoryModel, self).__init__(parent)
+        self.microprocessor = microprocessor
+        self.segment = 0
+        self.highlight = None  # physical address of the next instruction
+
+    @property
+    def start(self):
+        return self.segment << 4
+
+    def setSegment(self, segment):
+        self.beginResetModel()
+        self.segment = segment
+        self.endResetModel()
+
+    def addressesChanged(self, addresses):
+        start = self.start
+        for address in set(addresses):
+            offset = (address - start) & 0xFFFFF
+            if offset < SEGMENT_SIZE:
+                index = self.index(offset >> 4, offset & 0xF)
+                self.dataChanged.emit(index, index)
+
+    def setHighlight(self, address):
+        previous, self.highlight = self.highlight, address
+        self.addressesChanged([a for a in (previous, address) if a is not None])
+
+    def rowCount(self, parent=QtCore.QModelIndex()):
+        return SEGMENT_SIZE // 16
+
+    def columnCount(self, parent=QtCore.QModelIndex()):
+        return 16
+
+    def address(self, index):
+        return (self.start + index.row() * 16 + index.column()) & 0xFFFFF
+
+    def data(self, index, role=Qt.DisplayRole):
+        if not index.isValid():
+            return None
+        if role in (Qt.DisplayRole, Qt.EditRole):
+            return '{:02X}'.format(self.microprocessor.memory[self.address(index)])
+        if role == Qt.BackgroundRole and self.address(index) == self.highlight:
+            return QtGui.QBrush(QtGui.QColor(255, 210, 90))
+        if role == Qt.TextAlignmentRole:
+            return Qt.AlignCenter
+        return None
+
+    def setData(self, index, value, role=Qt.EditRole):
+        if role != Qt.EditRole:
+            return False
+        try:
+            byte = parseNumber(value if value[:2].lower() in ('0x', '0b') or value[:1] == '-'
+                               else '0x' + value, 8)
+        except ValueError:
+            return False
+        self.microprocessor.memory[self.address(index)] = byte
+        self.dataChanged.emit(index, index)
+        return True
+
+    def flags(self, index):
+        return Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsEditable
+
+    def headerData(self, section, orientation, role=Qt.DisplayRole):
+        if role != Qt.DisplayRole:
+            return None
+        if orientation == Qt.Horizontal:
+            return '{:X}'.format(section)
+        return '{:04X}:{:04X}'.format(self.segment, section * 16)
+
+
 # noinspection PyAttributeOutsideInit,PyPep8Naming
 class UI_MainWindow:
-    files = {}
     debugMode = False
     SEGMENT_VIEWS_COUNT = 4
 
     def __init__(self, microprocessor):
+        self.files = {}
         self.microprocessor = microprocessor
         self.microprocessor.Interface.memory_callback = self.updateTableMemories
         self.microprocessor.Interface.registers_callback = self.updateRegisters
         self.microprocessor.Interface.segments_callback = self.updateSegment
+        self.dos = DOS(microprocessor, output=self.appendProgramOutput, input=self.promptProgramInput)
+        self.runTimer = None
 
     def setupUI(self, MainWindow):
         MainWindow.setObjectName("MainWindow")
-        MainWindow.resize(750, 650)
+        MainWindow.resize(900, 700)
         MainWindow.setDocumentMode(True)
+        self.mainWindow = MainWindow
 
         self.mainWidget = QtWidgets.QWidget(MainWindow)
         MainWindow.setCentralWidget(self.mainWidget)
@@ -51,11 +147,13 @@ class UI_MainWindow:
         self.setupMenuBar(MainWindow)
         self.setupToolBars(MainWindow)
         self.setupStatusBar(MainWindow)
-        self.setupKeyboardShortcuts()
 
         self.retranslateUI(MainWindow)
 
         QtCore.QMetaObject.connectSlotsByName(MainWindow)
+
+        self.runTimer = QtCore.QTimer(MainWindow)
+        self.runTimer.timeout.connect(self.runBatch)
 
         self.newTab()
 
@@ -63,16 +161,11 @@ class UI_MainWindow:
         _translate = QtCore.QCoreApplication.translate
         MainWindow.setWindowTitle(_translate("MainWindow", "8086 Emulator"))
         self.menuFile.setTitle(_translate("MainWindow", "&File"))
-        self.menuEdit.setTitle(_translate("MainWindow", "Edit"))
-        self.menuView.setTitle(_translate("MainWindow", "View"))
-        self.menuAssembler.setTitle(_translate("MainWindow", "Assembler"))
-        self.menuDebugger.setTitle(_translate("MainWindow", "Debugger"))
-        self.menuSettings.setTitle(_translate("MainWindow", "Settings"))
-        self.menuWindow.setTitle(_translate("MainWindow", "Window"))
-        self.menuHelp.setTitle(_translate("MainWindow", "Help"))
-        self.actionOpen.setText(_translate("MainWindow", "&Open"))
-        self.actionNew.setText(_translate("MainWindow", "&New"))
-        self.actionSave.setText(_translate("MainWindow", "&Save"))
+        self.menuEdit.setTitle(_translate("MainWindow", "&Edit"))
+        self.menuView.setTitle(_translate("MainWindow", "&View"))
+        self.menuAssembler.setTitle(_translate("MainWindow", "&Assembler"))
+        self.menuDebugger.setTitle(_translate("MainWindow", "&Debugger"))
+        self.menuHelp.setTitle(_translate("MainWindow", "&Help"))
 
     def setupTabbedFilesWidget(self):
         self.tabbedFilesWidget = QtWidgets.QTabWidget(self.mainWidget)
@@ -84,40 +177,14 @@ class UI_MainWindow:
         self.gridLayoutTabbedFilesWidget.addWidget(self.tabbedFilesWidget, 0, 1, 1, 1)
 
     def setupDockWidgets(self, MainWindow):
-        self.setupDockWidgetProjectView(MainWindow)
         self.setupDockWidgetOutput(MainWindow)
         self.setupDockWidgetRegisterView(MainWindow)
         self.setupDockWidgetSegmentViews(MainWindow)
 
-    def setupDockWidgetProjectView(self, MainWindow):
-        self.dockProjectView = QtWidgets.QDockWidget(MainWindow)
-        self.dockProjectView.setWindowTitle('Project')
-        sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
-        sizePolicy.setHorizontalStretch(0)
-        sizePolicy.setVerticalStretch(0)
-        sizePolicy.setHeightForWidth(self.dockProjectView.sizePolicy().hasHeightForWidth())
-        self.dockProjectView.setSizePolicy(sizePolicy)
-        self.dockProjectOverviewContents = QtWidgets.QWidget()
-        self.gridLayoutDockProject = QtWidgets.QGridLayout(self.dockProjectOverviewContents)
-        self.treeFilesWidget = QtWidgets.QTreeWidget(self.dockProjectOverviewContents)
-        sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
-        sizePolicy.setHorizontalStretch(0)
-        sizePolicy.setVerticalStretch(0)
-        sizePolicy.setHeightForWidth(self.treeFilesWidget.sizePolicy().hasHeightForWidth())
-        self.treeFilesWidget.setSizePolicy(sizePolicy)
-        self.treeFilesWidget.headerItem().setText(0, "1")
-        self.gridLayoutDockProject.addWidget(self.treeFilesWidget, 0, 0, 1, 1)
-        self.dockProjectView.setWidget(self.dockProjectOverviewContents)
-        MainWindow.addDockWidget(QtCore.Qt.DockWidgetArea(1), self.dockProjectView)
-
     def setupDockWidgetOutput(self, MainWindow):
         self.dockOutput = QtWidgets.QDockWidget(MainWindow)
+        self.dockOutput.setObjectName('dockOutput')
         self.dockOutput.setWindowTitle('Log')
-        sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
-        sizePolicy.setHorizontalStretch(0)
-        sizePolicy.setVerticalStretch(0)
-        sizePolicy.setHeightForWidth(self.dockOutput.sizePolicy().hasHeightForWidth())
-        self.dockOutput.setSizePolicy(sizePolicy)
         self.dockOutput.setAllowedAreas(QtCore.Qt.AllDockWidgetAreas)
         self.dockOutputContents = QtWidgets.QWidget()
         self.gridLayoutDockOutput = QtWidgets.QGridLayout(self.dockOutputContents)
@@ -125,420 +192,452 @@ class UI_MainWindow:
         self.textOutput.setFont(QtGui.QFont('monospace', 10))
         self.gridLayoutDockOutput.addWidget(self.textOutput, 0, 0, 1, 1)
         self.dockOutput.setWidget(self.dockOutputContents)
-        MainWindow.addDockWidget(QtCore.Qt.DockWidgetArea(8), self.dockOutput)
+        MainWindow.addDockWidget(QtCore.Qt.BottomDockWidgetArea, self.dockOutput)
 
     def setupDockWidgetRegisterView(self, MainWindow):
         self.dockRegisterView = QtWidgets.QDockWidget(MainWindow)
+        self.dockRegisterView.setObjectName('dockRegisterView')
         self.dockRegisterView.setWindowTitle('Registers')
-        sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
-        sizePolicy.setHorizontalStretch(0)
-        sizePolicy.setVerticalStretch(0)
-        sizePolicy.setHeightForWidth(self.dockRegisterView.sizePolicy().hasHeightForWidth())
-        self.dockRegisterView.setSizePolicy(sizePolicy)
-        self.dockRegisterView.setFeatures(QtWidgets.QDockWidget.AllDockWidgetFeatures)
         self.dockRegisterView.setAllowedAreas(QtCore.Qt.AllDockWidgetAreas)
         self.dockRegisterViewContents = QtWidgets.QWidget()
         self.gridLayoutDockRegisterView = QtWidgets.QGridLayout(self.dockRegisterViewContents)
         self.tableRegisters = QtWidgets.QTableWidget(self.dockRegisterViewContents)
         self.tableRegisters.setItemDelegateForColumn(1, RegisterDelegate(self.tableRegisters))
         self.tableRegisters.setColumnCount(2)
-        regCount = len(self.microprocessor.Interface.registers)
-        self.tableRegisters.setRowCount(regCount)
+        registers = self.microprocessor.Interface.registers
+        self.tableRegisters.setRowCount(len(registers))
         self.tableRegisters.setHorizontalHeaderLabels(['Register', 'Value'])
         self.tableRegisters.verticalHeader().setVisible(False)
-        for i in range(regCount):
-            itemName = self.microprocessor.Interface.registers[i]
+        for i, itemName in enumerate(registers):
             itemLabel = QtWidgets.QTableWidgetItem(itemName)
-            itemLabel.setFlags(Qt.ItemIsSelectable)
-            itemLabel.setForeground(Qt.white)
+            itemLabel.setFlags(Qt.ItemIsEnabled)
             self.tableRegisters.setItem(i, 0, itemLabel)
-            itemValue = QtWidgets.QTableWidgetItem("0x{:04x}".format(getattr(self.microprocessor, itemName)))
+            itemValue = QtWidgets.QTableWidgetItem()
             itemValue.setFont(QtGui.QFont('monospace', 10))
             self.tableRegisters.setItem(i, 1, itemValue)
+        self.updateRegisters()
         self.tableRegisters.cellChanged.connect(self.registerTableUpdate)
         self.gridLayoutDockRegisterView.addWidget(self.tableRegisters, 0, 0, 1, 1)
         self.dockRegisterView.setWidget(self.dockRegisterViewContents)
-        MainWindow.addDockWidget(QtCore.Qt.DockWidgetArea(1), self.dockRegisterView)
-        MainWindow.tabifyDockWidget(self.dockRegisterView, self.dockProjectView)
+        MainWindow.addDockWidget(QtCore.Qt.LeftDockWidgetArea, self.dockRegisterView)
         self.dockRegisterView.setVisible(False)
 
     def updateRegisters(self):
+        if self.isRunning():
+            return
+        self.tableRegisters.blockSignals(True)
         for i, itemName in enumerate(self.microprocessor.Interface.registers):
-            item = self.tableRegisters.item(i, 1)
-            item.setText("0x{:04x}".format(getattr(self.microprocessor, itemName)))
+            self.tableRegisters.item(i, 1).setText("0x{:04X}".format(getattr(self.microprocessor, itemName)))
+        self.tableRegisters.blockSignals(False)
+        self.updateStatus()
+
+    def registerTableUpdate(self, row, column=1):
+        name = self.microprocessor.Interface.registers[row]
+        try:
+            setattr(self.microprocessor, name, parseNumber(self.tableRegisters.item(row, 1).text(), 16))
+        except ValueError:
+            pass
+        self.updateRegisters()
+        if name in self.microprocessor.Interface.segments.values():
+            self.updateSegment(None, None)
+        self.updateHighlight()
 
     def setupDockWidgetSegmentViews(self, MainWindow):
         self.dockWidgetSegmentViews = []
-        self.dockSegmentViewContents = []
-        self.gridLayoutDockSegmentViews = []
         self.tableComboBoxes = []
+        self.memoryModels = []
         self.tableMemories = []
 
         for i in range(self.SEGMENT_VIEWS_COUNT):
             dockSegmentView = QtWidgets.QDockWidget(MainWindow)
+            dockSegmentView.setObjectName(f'dockSegmentView{i}')
             dockSegmentView.setVisible(False)
             self.dockWidgetSegmentViews.append(dockSegmentView)
             dockSegmentView.setWindowTitle(f'Segment View {i + 1}')
-            sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
-            sizePolicy.setHorizontalStretch(0)
-            sizePolicy.setVerticalStretch(0)
-            sizePolicy.setHeightForWidth(dockSegmentView.sizePolicy().hasHeightForWidth())
-            dockSegmentView.setSizePolicy(sizePolicy)
             dockSegmentView.setAllowedAreas(QtCore.Qt.AllDockWidgetAreas)
             dockSegmentViewContents = QtWidgets.QWidget()
-            self.dockSegmentViewContents.append(dockSegmentViewContents)
             gridLayoutDockSegmentView = QtWidgets.QGridLayout(dockSegmentViewContents)
-            self.gridLayoutDockSegmentViews.append(gridLayoutDockSegmentView)
-            labelSegment = QtWidgets.QLabel(dockSegmentViewContents)
-            labelSegment.setText('Segment:')
+            labelSegment = QtWidgets.QLabel('Segment:', dockSegmentViewContents)
             gridLayoutDockSegmentView.addWidget(labelSegment, 0, 0, 1, 1)
             combobox = QtWidgets.QComboBox(dockSegmentViewContents)
-            self.tableComboBoxes.append(combobox)
             combobox.addItems(self.microprocessor.Interface.segments.keys())
+            combobox.setCurrentIndex(i % combobox.count())
+            self.tableComboBoxes.append(combobox)
             gridLayoutDockSegmentView.addWidget(combobox, 0, 1, 1, 1)
-            tableMemory = self.createTableMemory(dockSegmentViewContents)
-            combobox.currentTextChanged.connect(self.comboboxUpdateFunctionGenerator(i))
+            model = MemoryModel(self.microprocessor, dockSegmentViewContents)
+            self.memoryModels.append(model)
+            tableMemory = QtWidgets.QTableView(dockSegmentViewContents)
+            tableMemory.setModel(model)
+            tableMemory.setItemDelegate(MemoryDelegate(tableMemory))
+            tableMemory.setFont(QtGui.QFont('monospace', 9))
+            tableMemory.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+            tableMemory.verticalHeader().setDefaultSectionSize(20)
+            self.tableMemories.append(tableMemory)
+            combobox.currentTextChanged.connect(lambda text, view=i: self.showSegment(view))
             gridLayoutDockSegmentView.addWidget(tableMemory, 1, 0, 1, 2)
             dockSegmentView.setWidget(dockSegmentViewContents)
-            MainWindow.addDockWidget(QtCore.Qt.DockWidgetArea(8), dockSegmentView)
-        for i in range(self.SEGMENT_VIEWS_COUNT):
-            MainWindow.tabifyDockWidget(self.dockOutput, self.dockWidgetSegmentViews[i])
+            MainWindow.addDockWidget(QtCore.Qt.BottomDockWidgetArea, dockSegmentView)
+            MainWindow.tabifyDockWidget(self.dockOutput, dockSegmentView)
+            self.showSegment(i)
 
-    def comboboxUpdateFunctionGenerator(self, combobox):
-        def func(text):
-            segment = self.microprocessor.Interface.segments[text]
-            tableMemory = self.tableMemories[combobox]
-            segmentStart = getattr(self.microprocessor, segment) << 4
-            colStart = segmentStart & 0xF
-            rowStart = segmentStart >> 4
-            tableMemory.blockSignals(True)
-            tableMemory.setHorizontalHeaderLabels([hex(i % 16) for i in range(colStart, colStart + 16)])
-            tableMemory.setVerticalHeaderLabels([hex(i) for i in range(rowStart, rowStart + 2 ** 16 // 16)])
-            for i, value in enumerate(self.microprocessor.memory[segmentStart:segmentStart + 2 ** 16]):
-                col = i % 16
-                row = i // 16
-                item = tableMemory.item(row, col)
-                item.setText("0x{:02x}".format(value))
-            tableMemory.blockSignals(False)
-        return func
+    def showSegment(self, view):
+        register = self.microprocessor.Interface.segments[self.tableComboBoxes[view].currentText()]
+        segment = getattr(self.microprocessor, register)
+        if self.memoryModels[view].segment != segment:
+            self.memoryModels[view].setSegment(segment)
 
-    def updateTableMemories(self):
-        for i in range(self.SEGMENT_VIEWS_COUNT):
-            combobox = self.tableComboBoxes[i]
-            value = combobox.currentText()
-            segment = self.microprocessor.Interface.segments[value]
-            tableMemory = self.tableMemories[i]
-            segmentStart = getattr(self.microprocessor, segment) << 4
-            colStart = segmentStart & 0xF
-            rowStart = segmentStart >> 4
-            tableMemory.blockSignals(True)
-            tableMemory.setHorizontalHeaderLabels([hex(j % 16) for j in range(colStart, colStart + 16)])
-            tableMemory.setVerticalHeaderLabels([hex(j) for j in range(rowStart, rowStart + 2 ** 16 // 16)])
-            for j, value in enumerate(self.microprocessor.memory[segmentStart:segmentStart + 2 ** 16]):
-                col = j % 16
-                row = j // 16
-                item = tableMemory.item(row, col)
-                item.setText("0x{:02x}".format(value))
-            tableMemory.blockSignals(False)
-
-    def createTableMemory(self, parent):
-        tableMemory = QtWidgets.QTableWidget(parent)
-        self.tableMemories.append(tableMemory)
-        tableMemory.setColumnCount(16)
-        tableMemory.setRowCount(2 ** 16 // 16)
-        tableMemory.setItemDelegate(MemoryDelegate(tableMemory))
-        tableMemory.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
-        segmentStart = getattr(self.microprocessor, 'CS') << 4
-        colStart = segmentStart & 0xF
-        rowStart = segmentStart >> 4
-        tableMemory.setHorizontalHeaderLabels([hex(i % 16) for i in range(colStart, colStart + 16)])
-        tableMemory.setVerticalHeaderLabels([hex(i) for i in range(rowStart, rowStart + 2**16//16)])
-        for i, value in enumerate(self.microprocessor.memory[segmentStart:segmentStart + 2 ** 16]):
-            col = i % 16
-            row = i // 16
-            item = QtWidgets.QTableWidgetItem("0x{:02x}".format(value))
-            tableMemory.setItem(row, col, item)
-        tableMemory.cellChanged.connect(self.segmentTableUpdateFunctionGenerator(tableMemory))
-        return tableMemory
-
-    def registerTableUpdate(self, row):
-        value = self.tableRegisters.item(row, 1).text()
-        negative = value[0] == '-'
-        value = value.lstrip('+-')
-        if len(value) > 1 and value[1] == 'b':
-            base = 2
-        elif len(value) > 1 and value[1] == 'x':
-            base = 16
-        else:
-            base = 10
-        value = int(value, base)
-        value = -value if negative else value
-        setattr(self.microprocessor, self.microprocessor.Interface.registers[row], value)
-        item = self.tableRegisters.item(row, 1)
-        item.setText("0x{:04x}".format(getattr(self.microprocessor, self.microprocessor.Interface.registers[row])))
-
-    def segmentTableUpdateFunctionGenerator(self, table: QtWidgets.QTableWidget):
-        def func(row, col):
-            value = table.item(row, col).text()
-            negative = value[0] == '-'
-            value = value.lstrip('+-')
-            if len(value) > 1 and value[1] == 'b':
-                base = 2
-            elif len(value) > 1 and value[1] == 'x':
-                base = 16
+    def updateTableMemories(self, addresses=None):
+        if self.isRunning():
+            return
+        for i, model in enumerate(self.memoryModels):
+            if addresses is None:
+                self.showSegment(i)
+                model.setSegment(model.segment)  # repaint everything
             else:
-                base = 10
-            value = int(value, base)
-            value = -value if negative else value
-            r = int(table.verticalHeaderItem(row).text(), 16)
-            c = int(table.horizontalHeaderItem(col).text(), 16)
-            i = (r << 4) + c
-            self.microprocessor.memory[i] = value
-            item = table.item(row, col)
-            item.setText("0x{:02x}".format(self.microprocessor.memory[i]))
-        return func
+                model.addressesChanged(addresses)
 
-    def updateSegment(self, segment, segment_start):
-        for dockSegmentViewContent in self.dockSegmentViewContents:
-            combobox, *_ = dockSegmentViewContent.findChildren(QtWidgets.QComboBox)
-            if combobox.currentText() == segment:
-                print(segment)
-                colStart = segment_start & 0xF
-                rowStart = segment_start >> 4
-                tableMemory, *_ = dockSegmentViewContent.findChildren(QtWidgets.QTableWidget)
-                # tableMemory = QtWidgets.QTableWidget()
-                col = tableMemory.horizontalHeaderItem(0).text()
-                row = tableMemory.verticalHeaderItem(0).text()
-                if col == hex(colStart) and row == hex(rowStart):
-                    print('lel')
-                    continue
-                tableMemory.blockSignals(True)
-                tableMemory.setHorizontalHeaderLabels([hex(i % 16) for i in range(colStart, colStart + 16)])
-                tableMemory.setVerticalHeaderLabels([hex(i) for i in range(rowStart, rowStart + 2 ** 16 // 16)])
-                for i, value in enumerate(self.microprocessor.memory[segment_start:segment_start + 2 ** 16]):
-                    col = i % 16
-                    row = i // 16
-                    item = tableMemory.item(row, col)
-                    item.setText("0x{:02x}".format(value))
-                tableMemory.blockSignals(False)
+    def updateSegment(self, segment, segment_value):
+        if self.isRunning():
+            return
+        for i in range(self.SEGMENT_VIEWS_COUNT):
+            self.showSegment(i)
+
+    def updateHighlight(self):
+        cpu = self.microprocessor
+        address = cpu.physical_address(cpu.CS, cpu.IP) if self.debugMode else None
+        for model in self.memoryModels:
+            model.setHighlight(address)
+
+    def updateStatus(self):
+        if self.debugMode:
+            cpu = self.microprocessor
+            state = 'halted' if cpu.halted else 'running' if self.isRunning() else 'paused'
+            self.statusbar.showMessage(f'CS:IP = {cpu.CS:04X}:{cpu.IP:04X}   {state}')
 
     def setupActions(self, MainWindow):
-        self.actionOpen = QtWidgets.QAction(QtGui.QIcon(QtGui.QIcon.fromTheme('document-open')), "&Open", MainWindow)
-        self.actionNew = QtWidgets.QAction(QtGui.QIcon(QtGui.QIcon.fromTheme('document-new')), "&New", MainWindow)
-        self.actionSave = QtWidgets.QAction(QtGui.QIcon(QtGui.QIcon.fromTheme('document-save')), "&Save", MainWindow)
-        self.actionBuild = QtWidgets.QAction(QtGui.QIcon(QtGui.QIcon.fromTheme('run-build')), "Build", MainWindow)
-        self.actionDebug = QtWidgets.QAction(QtGui.QIcon(QtGui.QIcon.fromTheme('debug-run')), "Debug", MainWindow)
-        self.actionExitDebug = QtWidgets.QAction(QtGui.QIcon(QtGui.QIcon.fromTheme('stop')), "Exit Debug", MainWindow)
-        self.actionStep = QtWidgets.QAction(QtGui.QIcon(QtGui.QIcon.fromTheme('go-next')), "Step", MainWindow)
+        def action(icon, text, slot, shortcut=None):
+            newAction = QtWidgets.QAction(QtGui.QIcon.fromTheme(icon), text, MainWindow)
+            newAction.triggered.connect(slot)
+            if shortcut is not None:
+                newAction.setShortcut(QtGui.QKeySequence(shortcut))
+            MainWindow.addAction(newAction)
+            return newAction
+
+        self.actionNew = action('document-new', '&New', self.newTab, QtGui.QKeySequence.New)
+        self.actionOpen = action('document-open', '&Open...', self.fileOpen, QtGui.QKeySequence.Open)
+        self.actionSave = action('document-save', '&Save', self.fileSave, QtGui.QKeySequence.Save)
+        self.actionSaveAs = action('document-save-as', 'Save &As...', self.fileSaveAs, QtGui.QKeySequence.SaveAs)
+        self.actionClose = action('window-close', '&Close Tab', self.closeCurrentTab, QtGui.QKeySequence.Close)
+        self.actionQuit = action('application-exit', '&Quit', MainWindow.close, QtGui.QKeySequence.Quit)
+        self.actionBuild = action('run-build', 'Build', self.build, 'F7')
+        self.actionDebug = action('debug-run', 'Debug', self.debug, 'F8')
+        self.actionStep = action('go-next', 'Step', self.step, 'F10')
+        self.actionRun = action('media-playback-start', 'Run', self.run, 'F5')
+        self.actionStop = action('media-playback-pause', 'Pause', self.stop, 'Shift+F5')
+        self.actionExitDebug = action('process-stop', 'Exit Debug', self.exitDebug)
+        self.actionAbout = action('help-about', '&About', self.about)
 
         self.actionDebug.setEnabled(False)
-        self.actionExitDebug.setVisible(False)
-        self.actionStep.setVisible(False)
-
-        self.actionOpen.triggered.connect(self.fileOpen)
-        self.actionNew.triggered.connect(self.newTab)
-        self.actionSave.triggered.connect(self.fileSave)
-        self.actionBuild.triggered.connect(self.build)
-        self.actionDebug.triggered.connect(self.debug)
-        self.actionExitDebug.triggered.connect(self.exitDebug)
-        self.actionStep.triggered.connect(self.microprocessor.step)
+        for debugAction in (self.actionStep, self.actionRun, self.actionStop, self.actionExitDebug):
+            debugAction.setVisible(False)
 
     def setupMenuBar(self, MainWindow):
         self.menubar = QtWidgets.QMenuBar(MainWindow)
-        self.menubar.setGeometry(QtCore.QRect(0, 0, 747, 30))
 
-        self.menuFile = QtWidgets.QMenu(self.menubar)
-        self.menuFile.addAction(self.actionOpen)
-        self.menuFile.addAction(self.actionNew)
-        self.menuFile.addAction(self.actionSave)
-        self.menuEdit = QtWidgets.QMenu(self.menubar)
-        self.menuView = QtWidgets.QMenu(self.menubar)
-        self.menuAssembler = QtWidgets.QMenu(self.menubar)
-        self.menuDebugger = QtWidgets.QMenu(self.menubar)
-        self.menuSettings = QtWidgets.QMenu(self.menubar)
-        self.menuWindow = QtWidgets.QMenu(self.menubar)
-        self.menuHelp = QtWidgets.QMenu(self.menubar)
+        self.menuFile = self.menubar.addMenu('&File')
+        for fileAction in (self.actionNew, self.actionOpen, self.actionSave, self.actionSaveAs, self.actionClose):
+            self.menuFile.addAction(fileAction)
+        self.menuFile.addSeparator()
+        self.menuFile.addAction(self.actionQuit)
 
-        self.menubar.addAction(self.menuFile.menuAction())
-        self.menubar.addAction(self.menuEdit.menuAction())
-        self.menubar.addAction(self.menuView.menuAction())
-        self.menubar.addAction(self.menuAssembler.menuAction())
-        self.menubar.addAction(self.menuDebugger.menuAction())
-        self.menubar.addAction(self.menuSettings.menuAction())
-        self.menubar.addAction(self.menuWindow.menuAction())
-        self.menubar.addAction(self.menuHelp.menuAction())
+        self.menuEdit = self.menubar.addMenu('&Edit')
+        for text, slot, key in (('Undo', 'undo', QtGui.QKeySequence.Undo), ('Redo', 'redo', QtGui.QKeySequence.Redo),
+                                ('Cut', 'cut', QtGui.QKeySequence.Cut), ('Copy', 'copy', QtGui.QKeySequence.Copy),
+                                ('Paste', 'paste', QtGui.QKeySequence.Paste),
+                                ('Select All', 'selectAll', QtGui.QKeySequence.SelectAll)):
+            editAction = self.menuEdit.addAction(text)
+            editAction.setShortcut(QtGui.QKeySequence(key))
+            editAction.setShortcutContext(Qt.WidgetShortcut)  # the editor handles the keys itself
+            editAction.triggered.connect(lambda checked=False, name=slot: self.editorAction(name))
+
+        self.menuView = self.menubar.addMenu('&View')
+        self.menuView.addAction(self.dockOutput.toggleViewAction())
+        self.menuView.addAction(self.dockRegisterView.toggleViewAction())
+        for dockSegmentView in self.dockWidgetSegmentViews:
+            self.menuView.addAction(dockSegmentView.toggleViewAction())
+
+        self.menuAssembler = self.menubar.addMenu('&Assembler')
+        self.menuAssembler.addAction(self.actionBuild)
+
+        self.menuDebugger = self.menubar.addMenu('&Debugger')
+        for debugAction in (self.actionDebug, self.actionStep, self.actionRun, self.actionStop, self.actionExitDebug):
+            self.menuDebugger.addAction(debugAction)
+
+        self.menuHelp = self.menubar.addMenu('&Help')
+        self.menuHelp.addAction(self.actionAbout)
 
         MainWindow.setMenuBar(self.menubar)
 
     def setupToolBars(self, MainWindow):
         self.toolbarFile = MainWindow.addToolBar("File")
+        self.toolbarFile.setObjectName('toolbarFile')
         self.toolbarFile.addAction(self.actionNew)
         self.toolbarFile.addAction(self.actionOpen)
         self.toolbarFile.addAction(self.actionSave)
 
         self.toolbarDebug = MainWindow.addToolBar("Debug")
-        self.toolbarDebug.addAction(self.actionBuild)
-        self.toolbarDebug.addAction(self.actionDebug)
-        self.toolbarDebug.addAction(self.actionExitDebug)
-        self.toolbarDebug.addAction(self.actionStep)
+        self.toolbarDebug.setObjectName('toolbarDebug')
+        for debugAction in (self.actionBuild, self.actionDebug, self.actionStep, self.actionRun, self.actionStop,
+                            self.actionExitDebug):
+            self.toolbarDebug.addAction(debugAction)
 
     def setupStatusBar(self, MainWindow):
         self.statusbar = QtWidgets.QStatusBar(MainWindow)
         MainWindow.setStatusBar(self.statusbar)
 
-    def setupKeyboardShortcuts(self):
-        self.shortcutNew = QtWidgets.QShortcut(QtGui.QKeySequence(QtGui.QKeySequence.New), self.mainWidget)
-        self.shortcutNew.activated.connect(self.newTab)
+    # ------------------------------------------------------------------ editor
 
-        self.shortcutSave = QtWidgets.QShortcut(QtGui.QKeySequence(QtGui.QKeySequence.Save), self.mainWidget)
-        self.shortcutSave.activated.connect(self.fileSave)
+    def currentEditor(self):
+        tab = self.tabbedFilesWidget.currentWidget()
+        return None if tab is None else tab.findChild(QtWidgets.QPlainTextEdit)
 
-        self.shortcutOpen = QtWidgets.QShortcut(QtGui.QKeySequence(QtGui.QKeySequence.Open), self.mainWidget)
-        self.shortcutOpen.activated.connect(self.fileOpen)
+    def editorAction(self, name):
+        editor = self.currentEditor()
+        if editor is not None:
+            getattr(editor, name)()
 
-        self.shortcutBuild = QtWidgets.QShortcut(QtGui.QKeySequence('F7'), self.mainWidget)
-        self.shortcutBuild.activated.connect(self.build)
+    def tabTitle(self, file):
+        title = 'New File' if file.path is None else os.path.basename(file.path)
+        return title + ('*' if file.modified else '')
 
-        self.shortcutDebug = QtWidgets.QShortcut(QtGui.QKeySequence('F8'), self.mainWidget)
-        self.shortcutDebug.activated.connect(self.debug)
-        self.shortcutDebug.setEnabled(False)
+    def refreshTabTitle(self, tab):
+        self.tabbedFilesWidget.setTabText(self.tabbedFilesWidget.indexOf(tab), self.tabTitle(self.files[tab]))
 
     def newTab(self, path=None):
         if type(path) is bool:
             path = None
         file = File(path)
-        _translate = QtCore.QCoreApplication.translate
         tab = QtWidgets.QWidget()
-        tab.setObjectName(f"tab{self.tabbedFilesWidget.count()}")
+        tab.setObjectName(f"tab{file.id}")
         verticalLayout = QtWidgets.QVBoxLayout(tab)
-        verticalLayout.setObjectName("verticalLayout")
         plainTextEdit = QtWidgets.QPlainTextEdit(tab)
-        plainTextEdit.setObjectName("plainTextEdit")
         plainTextEdit.setFont(QtGui.QFont('monospace', 10))
-        plainTextEdit.textChanged.connect(self.textEdited)
         plainTextEdit.setPlainText(file.data)
+        plainTextEdit.textChanged.connect(lambda: self.textEdited(tab))
         verticalLayout.addWidget(plainTextEdit)
-        self.tabbedFilesWidget.addTab(tab, "")
-        self.tabbedFilesWidget.setTabText(
-            self.tabbedFilesWidget.indexOf(tab),
-            _translate("MainWindow", "New File" if path is None else path.rsplit('/', maxsplit=1)[-1]))
-        self.tabbedFilesWidget.setCurrentIndex(self.tabbedFilesWidget.indexOf(tab))
         self.files[tab] = file
+        self.tabbedFilesWidget.addTab(tab, self.tabTitle(file))
+        self.tabbedFilesWidget.setCurrentWidget(tab)
         plainTextEdit.setFocus()
 
     def closeTab(self, index):
-        name = self.tabbedFilesWidget.tabText(self.tabbedFilesWidget.currentIndex())
-        if self.tabbedFilesWidget.tabText(self.tabbedFilesWidget.currentIndex())[-1] == '*':
-            ret = self.dialogUnsavedWarning(name[:-1])
+        """Close the tab at index, asking about unsaved changes. Returns False if cancelled."""
+        tab = self.tabbedFilesWidget.widget(index)
+        file = self.files[tab]
+        if file.modified:
+            ret = self.dialogUnsavedWarning(self.tabTitle(file).rstrip('*'))
             if ret == QtWidgets.QMessageBox.Save:
-                self.fileSave(index)
+                if not self.fileSave(index):
+                    return False
             elif ret != QtWidgets.QMessageBox.Discard:
-                return
+                return False
         self.tabbedFilesWidget.removeTab(index)
+        del self.files[tab]
+        tab.deleteLater()
+        return True
+
+    def closeCurrentTab(self):
+        if self.tabbedFilesWidget.count() > 0:
+            self.closeTab(self.tabbedFilesWidget.currentIndex())
 
     def closeAllTabs(self):
+        """Returns False if the user cancelled closing a modified file."""
         while self.tabbedFilesWidget.count() > 0:
-            self.closeTab(0)
+            if not self.closeTab(0):
+                return False
+        return True
 
     def tabUpdate(self):
-        if self.tabbedFilesWidget.count() > 0:
-            self.actionSave.setEnabled(True)
-            self.actionBuild.setEnabled(True)
-        else:
-            self.actionSave.setEnabled(False)
-            self.actionBuild.setEnabled(False)
+        hasTabs = self.tabbedFilesWidget.count() > 0
+        self.actionSave.setEnabled(hasTabs)
+        self.actionSaveAs.setEnabled(hasTabs)
+        self.actionBuild.setEnabled(hasTabs and not self.debugMode)
+        if hasTabs and not self.debugMode:
+            file = self.files.get(self.tabbedFilesWidget.currentWidget())
+            self.actionDebug.setEnabled(file is not None and file.exe is not None)
 
-    def textEdited(self):
-        tab = self.tabbedFilesWidget.widget(self.tabbedFilesWidget.currentIndex())
-        if tab is not None:
-            file = self.files[tab]
-            text = tab.findChild(QtWidgets.QPlainTextEdit).toPlainText()
-            if not file.modified and text != file.data:
-                file.modified = True
-                _translate = QtCore.QCoreApplication.translate
-                self.tabbedFilesWidget.setTabText(
-                    self.tabbedFilesWidget.currentIndex(),
-                    _translate("MainWindow",
-                               f"{self.tabbedFilesWidget.tabText(self.tabbedFilesWidget.currentIndex())}*"))
+    def textEdited(self, tab):
+        file = self.files.get(tab)
+        if file is None:
+            return
+        modified = tab.findChild(QtWidgets.QPlainTextEdit).toPlainText() != file.data
+        if modified != file.modified:
+            file.modified = modified
+            self.refreshTabTitle(tab)
 
-    def fileSave(self, index=None):
+    def fileSave(self, index=None, saveAs=False):
+        if type(index) is bool:
+            index = None
         tab = self.tabbedFilesWidget.widget(self.tabbedFilesWidget.currentIndex() if index is None else index)
-        if tab is not None:
-            file = self.files[tab]
-            file.modified = False
-            text = tab.findChild(QtWidgets.QPlainTextEdit).toPlainText()
-            if file.saved:
-                path = file.path
-            else:
-                path, _ = QtWidgets.QFileDialog.getSaveFileName(self.mainWidget, 'Save File')
-            if path != '':
-                file.save(data=text, path=path)
-                _translate = QtCore.QCoreApplication.translate
-                self.tabbedFilesWidget.setTabText(
-                    self.tabbedFilesWidget.currentIndex(),
-                    _translate("MainWindow",
-                               self.tabbedFilesWidget.tabText(self.tabbedFilesWidget.currentIndex()).rstrip('*')))
-                return True
-        return False
+        if tab is None:
+            return False
+        file = self.files[tab]
+        path = file.path
+        if saveAs or not file.saved:
+            path, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self.mainWidget, 'Save File', path or '', 'Assembly (*.asm);;All files (*)')
+            if not path:
+                return False
+        file.save(data=tab.findChild(QtWidgets.QPlainTextEdit).toPlainText(), path=path)
+        file.modified = False
+        self.refreshTabTitle(tab)
+        return True
+
+    def fileSaveAs(self):
+        return self.fileSave(saveAs=True)
 
     def fileOpen(self):
-        paths, _ = QtWidgets.QFileDialog.getOpenFileNames(self.mainWidget, 'Open Files')
-        opened = [file.path for file in self.files.values()]
+        paths, _ = QtWidgets.QFileDialog.getOpenFileNames(
+            self.mainWidget, 'Open Files', '', 'Assembly (*.asm);;All files (*)')
         for path in paths:
-            try:
-                idx = opened.index(path)
-                tab = list(self.files.keys())[idx]
-                self.tabbedFilesWidget.setCurrentIndex(self.tabbedFilesWidget.indexOf(tab))
-            except ValueError:
+            for tab, file in self.files.items():
+                if file.path is not None and os.path.samefile(file.path, path):
+                    self.tabbedFilesWidget.setCurrentWidget(tab)
+                    break
+            else:
                 self.newTab(path)
+
+    # ------------------------------------------------------------- build/debug
+
+    def log(self, text):
+        self.textOutput.moveCursor(QtGui.QTextCursor.End)
+        self.textOutput.insertPlainText(text)
+        self.textOutput.moveCursor(QtGui.QTextCursor.End)
+
+    def appendProgramOutput(self, text):
+        self.log(text.replace('\r\n', '\n').replace('\r', ''))
+
+    def promptProgramInput(self):
+        text, ok = QtWidgets.QInputDialog.getText(self.mainWidget, 'Program input', 'The program is waiting for input:')
+        return text if ok else None
 
     def build(self):
         self.textOutput.clear()
-        tab = self.tabbedFilesWidget.widget(self.tabbedFilesWidget.currentIndex())
+        tab = self.tabbedFilesWidget.currentWidget()
+        if tab is None:
+            return False
         file = self.files[tab]
-        success = False
+        success, exe = False, None
         if self.fileSave():
-            if self.dockOutput.isHidden():
-                self.dockOutput.setVisible(True)
-            success, log = tasm_tlink(file.path)
-            log = log.split('\n', 2)[-1]
+            self.dockOutput.setVisible(True)
+            self.dockOutput.raise_()
+            try:
+                success, log, exe = tasm_tlink(file.path)
+            except AssemblerError as e:
+                log = f'Build failed: {e}'
             self.textOutput.setText(log)
             self.textOutput.moveCursor(QtGui.QTextCursor.End)
         file.build_success = success
-        file.exe = f'{file.path.rsplit(".", 1)[0]}.EXE' if success else None
+        file.exe = exe
         self.actionDebug.setEnabled(success)
-        self.shortcutDebug.setEnabled(True)
         return success
 
+    def setDebugMode(self, enabled):
+        self.debugMode = enabled
+        self.toolbarFile.setVisible(not enabled)
+        self.actionBuild.setVisible(not enabled)
+        self.actionDebug.setVisible(not enabled)
+        for debugAction in (self.actionStep, self.actionRun, self.actionStop, self.actionExitDebug):
+            debugAction.setVisible(enabled)
+        self.dockRegisterView.setVisible(enabled)
+        for dockSegmentView in self.dockWidgetSegmentViews:
+            dockSegmentView.setVisible(enabled)
+        for tab in self.files:
+            tab.findChild(QtWidgets.QPlainTextEdit).setReadOnly(enabled)
+        self.setRunControls()
+
+    def setRunControls(self):
+        running, halted = self.isRunning(), self.microprocessor.halted
+        self.actionStep.setEnabled(self.debugMode and not running and not halted)
+        self.actionRun.setEnabled(self.debugMode and not running and not halted)
+        self.actionStop.setEnabled(self.debugMode and running)
+        self.updateStatus()
+
     def debug(self):
-        self.debugMode = True
-        self.toolbarFile.setVisible(False)
-        self.actionBuild.setVisible(False)
-        self.actionDebug.setVisible(False)
-        self.actionExitDebug.setVisible(True)
-        self.actionStep.setVisible(True)
-        self.dockRegisterView.setVisible(True)
+        tab = self.tabbedFilesWidget.currentWidget()
+        file = self.files.get(tab)
+        if file is None or file.exe is None:
+            return
+        self.textOutput.clear()
+        try:
+            program = self.microprocessor.load_program(file.exe)
+        except (OSError, ProgramFormatError) as e:
+            self.log(f'Cannot load {file.exe}: {e}\n')
+            return
+        self.setDebugMode(True)
         self.dockRegisterView.raise_()
-        for i, dockSegmentView in enumerate(self.dockWidgetSegmentViews):
-            dockSegmentView.setVisible(True)
-            if i == 0:
-                dockSegmentView.raise_()
-        self.microprocessor.reset()
-        tab = self.tabbedFilesWidget.widget(self.tabbedFilesWidget.currentIndex())
-        file = self.files[tab]
-        self.microprocessor.load_hex_from_exe(file.exe)
+        self.dockOutput.raise_()
+        self.log(f'Loaded {os.path.basename(file.exe)} ({program.kind}, {program.size} bytes) at '
+                 f'{self.microprocessor.CS:04X}:{self.microprocessor.IP:04X}\n')
         self.microprocessor.debug()
+        self.updateHighlight()
+        self.setRunControls()
+
+    def executeSteps(self, count):
+        """Run up to count instructions; reports errors and program exit. Returns False to stop."""
+        cpu = self.microprocessor
+        try:
+            for _ in range(count):
+                if cpu.halted:
+                    break
+                cpu.step()
+        except (InstructionNotImplemented, DOSServiceNotImplemented) as e:
+            self.log(f'\nStopped at {cpu.CS:04X}:{cpu.IP:04X}: {e}\n')
+            return False
+        if cpu.halted:
+            if cpu.exit_code is not None:
+                self.log(f'\nProgram exited with code {cpu.exit_code}\n')
+            else:
+                self.log(f'\nCPU halted at {cpu.CS:04X}:{cpu.IP:04X}\n')
+            return False
+        return True
+
+    def step(self):
+        if not self.debugMode or self.isRunning():
+            return
+        self.executeSteps(1)
+        self.updateHighlight()
+        self.setRunControls()
+
+    def isRunning(self):
+        return self.runTimer is not None and self.runTimer.isActive()
+
+    def run(self):
+        if self.debugMode and not self.microprocessor.halted:
+            self.runTimer.start(0)
+            self.setRunControls()
+
+    def runBatch(self):
+        if not self.executeSteps(RUN_BATCH_STEPS):
+            self.stop()
+
+    def stop(self):
+        if self.isRunning():
+            self.runTimer.stop()
+            self.microprocessor.notify_all()
+        self.updateHighlight()
+        self.setRunControls()
 
     def exitDebug(self):
-        self.debugMode = False
-        self.toolbarFile.setVisible(True)
-        self.actionBuild.setVisible(True)
-        self.actionDebug.setVisible(True)
-        self.actionExitDebug.setVisible(False)
-        self.actionStep.setVisible(False)
-        self.dockRegisterView.setVisible(False)
-        for dockSegmentView in self.dockWidgetSegmentViews:
-            dockSegmentView.setVisible(False)
+        self.runTimer.stop()
+        self.setDebugMode(False)
+        self.updateHighlight()
+        self.statusbar.clearMessage()
+        self.tabUpdate()
+
+    def about(self):
+        QtWidgets.QMessageBox.about(self.mainWidget, '8086 Emulator',
+                                    'Edit, assemble (TASM in DOSBox) and step through 8086 programs.')
 
     @staticmethod
     def dialogUnsavedWarning(name):

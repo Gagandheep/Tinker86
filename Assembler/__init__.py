@@ -1,74 +1,123 @@
+"""Assemble and link .asm files with Turbo Assembler (TASM/TLINK) running in DOSBox.
+
+TASM.EXE and TLINK.EXE are not distributed with this repository; copy them
+into external/tasm/BIN. DOSBox must be installed and on PATH (or named by
+the DOSBOX environment variable).
+"""
 import os
-import subprocess
 import re
-from sys import platform
+import shutil
+import subprocess
+import sys
+import tempfile
 
-tasm_dir = os.path.join(os.getcwd(), 'external', 'tasm')
-log_file = 'DOSBOX.LOG'
-log_dir = os.getcwd()
-
-if platform == 'win32':
-    executable = '.run.bat'
-    command = 'DOSBox'
-elif platform == 'linux':
-    executable = '.run.sh'
-    command = 'dosbox'
-
-
-def dosbox_run(*commands, config=None, stdout_file=None, noconsole=True, headless=True, append=False):
-    global command, log_dir, log_file
-    l_dir, l_file, comm = log_dir, log_file, command
-
-    if stdout_file is not None:
-        if not append and os.path.exists(stdout_file):
-            os.remove(stdout_file)
-        s = '\\' if platform == "win32" else '/'
-        l_dir, l_file = stdout_file.rsplit(s, 1)
-        comm += f' -c "mount y {log_dir}"'
-    for com in commands:
-        if stdout_file is None:
-            comm += f' -c "{com}"'
-        else:
-            comm += f' -c "{com} >> y:{log_file}"'
-    if noconsole:
-        comm += ' -noconsole'
-    if config is not None:
-        comm += f' -conf "{config}"'
-    with open(executable, 'w') as f:
-        f.writelines((['#! /bin/bash\n'] if platform == 'linux' else []) + (
-            [f'{"set" if platform == "win32" else "export"} SDL_VIDEODRIVER=dummy\n']
-            if headless else []) + [comm])
-    cmd = os.path.join(os.getcwd(), executable)
-    subprocess.call([rf'{cmd}'], stdout=subprocess.DEVNULL)
-    if os.path.exists('stderr.txt'):
-        os.remove('stderr.txt')
-    if os.path.exists('stdout.txt'):
-        os.remove('stdout.txt')
-    if os.path.exists(executable):
-        os.remove(executable)
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+TASM_DIR = os.path.join(ROOT, 'external', 'tasm')
+TASM_BIN = os.path.join(TASM_DIR, 'BIN')
+DOSBOX_CONFIG = os.path.join(TASM_BIN, 'dosbox.conf')
+LOG_NAME = 'BUILD.LOG'
+DOS_NAME = re.compile(r'^[A-Za-z0-9_\-$~!#%&@^]{1,8}$')
 
 
-def tasm_tlink(target):
-    s = '\\' if platform == "win32" else '/'
-    target_dir, target_file = target.rstrip('.asm').rsplit(s, 1)
-    commands = [f"mount c {tasm_dir}",
-                f"mount x {target_dir}",
-                "c:",
-                "cd BIN",
-                f"tasm x:\\{target_file} x:\\{target_file} /x",
-                f"tlink x:\\{target_file} x:\\{target_file} /x",
-                "exit"]
-    # ]
-    dosbox_run(*commands, config=os.path.join(tasm_dir, 'BIN', 'dosbox.conf'),
-               stdout_file=os.path.join(log_dir, log_file), headless=True)
-
-    with open('DOSBOX.LOG') as file:
-        log = file.read()
-    return error_check(log), log
+class AssemblerError(Exception):
+    """The toolchain is missing or the source file cannot be built."""
 
 
-def error_check(log):
-    pattern = 'Error messages:[ ]+(.*)\n'
-    matches = re.findall(pattern, log)
-    return matches[0] == 'None'
+def dosbox_executable():
+    configured = os.environ.get('DOSBOX')
+    if configured:
+        return configured
+    for name in ('dosbox', 'DOSBox', 'dosbox-x'):
+        found = shutil.which(name)
+        if found:
+            return found
+    if sys.platform == 'darwin':
+        app = '/Applications/dosbox.app/Contents/MacOS/DOSBox'
+        if os.path.exists(app):
+            return app
+    raise AssemblerError('DOSBox was not found; install it or set the DOSBOX environment variable')
 
+
+def find_file(directory, name):
+    """Case-insensitive lookup (DOS tools write upper-case names)."""
+    try:
+        entries = os.listdir(directory)
+    except FileNotFoundError:
+        return None
+    for entry in entries:
+        if entry.lower() == name.lower():
+            return os.path.join(directory, entry)
+    return None
+
+
+def check_toolchain():
+    missing = [tool for tool in ('TASM.EXE', 'TLINK.EXE') if find_file(TASM_BIN, tool) is None]
+    if missing:
+        raise AssemblerError(f'{" and ".join(missing)} not found in {TASM_BIN}; '
+                             'copy the Turbo Assembler binaries there')
+
+
+def split_source(path):
+    """Return (directory, DOS base name) for a source file, validating 8.3 naming."""
+    directory, filename = os.path.split(os.path.abspath(path))
+    base, extension = os.path.splitext(filename)
+    if extension.lower() != '.asm':
+        raise AssemblerError(f'{filename}: expected a .asm file')
+    if not DOS_NAME.match(base):
+        raise AssemblerError(f'{filename}: DOS tools need a name of at most 8 letters, digits or _ '
+                             '(no spaces) before .asm')
+    return directory, base
+
+
+def dosbox_command(setup, captured, log_directory):
+    """Build the DOSBox command line: run setup, then captured commands with output logged."""
+    arguments = [dosbox_executable(), '-c', f'mount y "{log_directory}"']
+    for command in setup:
+        arguments += ['-c', command]
+    for command in captured:
+        arguments += ['-c', f'{command} >> y:\\{LOG_NAME}']
+    arguments += ['-c', 'exit']
+    if os.path.exists(DOSBOX_CONFIG):
+        arguments += ['-conf', DOSBOX_CONFIG]
+    if sys.platform == 'win32':
+        arguments.append('-noconsole')
+    return arguments
+
+
+def run_in_dosbox(setup, captured, headless=True):
+    """Run DOS commands in DOSBox and return everything the captured ones printed."""
+    with tempfile.TemporaryDirectory() as log_directory:
+        env = dict(os.environ)
+        if headless:
+            env['SDL_VIDEODRIVER'] = 'dummy'
+            env['SDL_AUDIODRIVER'] = 'dummy'
+        subprocess.run(dosbox_command(setup, captured, log_directory), env=env, cwd=log_directory,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        log_path = os.path.join(log_directory, LOG_NAME)
+        if not os.path.exists(log_path):
+            raise AssemblerError('DOSBox produced no output; check that it runs on this system')
+        with open(log_path, encoding='latin-1') as f:
+            return f.read().replace('\r\n', '\n')
+
+
+def build_succeeded(log):
+    """TASM reports 'Error messages: None'; TLINK prints 'Error:'/'Fatal:' lines on failure."""
+    tasm_errors = re.findall(r'Error messages:\s*(.*)', log)
+    if not tasm_errors or any(e.strip() != 'None' for e in tasm_errors):
+        return False
+    return re.search(r'^\s*(Fatal|Error):', log, re.MULTILINE) is None
+
+
+def tasm_tlink(source):
+    """Assemble and link source. Returns (success, log, path of the .EXE or None)."""
+    check_toolchain()
+    directory, base = split_source(source)
+    stale = find_file(directory, base + '.exe')
+    if stale:
+        os.remove(stale)
+    setup = [f'mount c "{TASM_DIR}"', f'mount x "{directory}"', 'c:', 'cd BIN']
+    captured = [f'tasm x:\\{base}.asm, x:\\{base}.obj', f'tlink x:\\{base}.obj, x:\\{base}.exe']
+    log = run_in_dosbox(setup, captured)
+    exe = find_file(directory, base + '.exe')
+    success = build_succeeded(log) and exe is not None
+    return success, log, exe if success else None
