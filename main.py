@@ -13,8 +13,10 @@ class ApplicationWindow(QtWidgets.QMainWindow):
         self.ui.setupUI(self)
 
     def closeEvent(self, event):
-        self.ui.closeAllTabs()
-        event.accept()
+        if self.ui.closeAllTabs():
+            event.accept()
+        else:
+            event.ignore()
 
 
 def main():
