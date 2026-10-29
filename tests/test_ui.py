@@ -9,7 +9,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 try:
-    from PyQt5 import QtWidgets
+    from PyQt5 import QtCore, QtWidgets
+    from PyQt5.QtTest import QTest
 except ImportError:  # pragma: no cover
     QtWidgets = None
 
@@ -34,19 +35,51 @@ class MainWindowTests(unittest.TestCase):
         self.ui.dialogUnsavedWarning = lambda name: QtWidgets.QMessageBox.Discard
         self.window.close()
 
-    def load_hello(self):
-        exe = os.path.join(self.tmp.name, 'HELLO.EXE')
+    def load_exe(self, image, **kwargs):
+        exe = os.path.join(self.tmp.name, 'PROGRAM.EXE')
         with open(exe, 'wb') as f:
-            f.write(make_exe(HELLO_CODE + HELLO_DATA, relocations=[(1, 0)], ss=4, sp=0x80))
+            f.write(make_exe(image, **kwargs))
         file = self.ui.files[self.ui.tabbedFilesWidget.currentWidget()]
         file.exe = exe
         self.ui.debug()
+
+    def load_hello(self):
+        self.load_exe(HELLO_CODE + HELLO_DATA, relocations=[(1, 0)], ss=4, sp=0x80)
+
+    def run_until_stopped(self):
+        while self.ui.isRunning():
+            self.app.processEvents()
+
+    def test_screen_shows_output_and_keyboard_resumes_run(self):
+        # ah=0: int 16h (wait for key) ; ah=0Eh: int 10h (echo it) ; mov ax,4C00h ; int 21h
+        code = bytes([0xB4, 0x00, 0xCD, 0x16, 0xB4, 0x0E, 0xCD, 0x10, 0xB8, 0x00, 0x4C, 0xCD, 0x21])
+        self.load_exe(code, ss=1, sp=0x80)
+        bios = self.ui.dos.bios
+        self.ui.run()
+        self.run_until_stopped()
+        cpu = self.window.microprocessor
+        self.assertTrue(cpu.waiting_for_input)
+        self.assertTrue(self.ui.resumeOnInput)
+        self.assertIn('waiting for keyboard input', self.ui.statusbar.currentMessage())
+        QTest.keyClick(self.ui.screen, QtCore.Qt.Key_Q)
+        self.run_until_stopped()
+        self.assertTrue(cpu.halted)
+        self.assertEqual(bios.screen_text(), 'q')
+        self.assertIn('exited with code 0', self.ui.textOutput.toPlainText())
+
+    def test_screen_paints(self):
+        self.load_hello()
+        self.ui.run()
+        self.run_until_stopped()
+        self.assertEqual(self.ui.dos.bios.screen_text(), 'Hello, 8086!')
+        image = self.ui.screen.grab().toImage()
+        self.assertFalse(image.isNull())
 
     def test_debug_step_and_run_to_exit(self):
         self.load_hello()
         cpu = self.window.microprocessor
         self.assertTrue(self.ui.debugMode)
-        self.assertIn('Loaded HELLO.EXE', self.ui.textOutput.toPlainText())
+        self.assertIn('Loaded PROGRAM.EXE', self.ui.textOutput.toPlainText())
         self.ui.step()
         self.assertEqual(cpu.IP, 3)
         registers = cpu.Interface.registers
