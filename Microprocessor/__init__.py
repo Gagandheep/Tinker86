@@ -92,8 +92,9 @@ class Microprocessor:
         # ModRM reg field -> operation for the F6/F7 and FF opcode groups
         self._group3 = [self._test_imm, self._test_imm, self._not, self._neg] + \
             [lambda w: self._unimplemented(0xF6 | w)] * 4
-        self._group5 = [lambda: self._inc_dec_rm(1, False), lambda: self._inc_dec_rm(1, True)] + \
-            [lambda: self._unimplemented(0xFF)] * 6
+        self._group5 = [lambda: self._inc_dec_rm(1, False), lambda: self._inc_dec_rm(1, True),
+                        self._call_indirect, self._call_far_indirect, self._jmp_indirect,
+                        self._jmp_far_indirect, self._push_rm, self._push_rm]
         self.reset()
 
     def reset(self, clear_memory=True):
@@ -641,6 +642,130 @@ class Microprocessor:
         operation = self._modrm()
         self._group5[operation]()
 
+    # --------------------------------------------------------- control transfer
+
+    def _condition(self, code):
+        """Jcc condition code (low nibble of 70-7F); odd codes are negations."""
+        f = self.flags
+        test = code >> 1
+        if test == 0:
+            result = f & OF
+        elif test == 1:
+            result = f & CF
+        elif test == 2:
+            result = f & ZF
+        elif test == 3:
+            result = f & (CF | ZF)
+        elif test == 4:
+            result = f & SF
+        elif test == 5:
+            result = f & PF
+        elif test == 6:
+            result = bool(f & SF) != bool(f & OF)
+        else:
+            result = (bool(f & SF) != bool(f & OF)) or f & ZF
+        return bool(result) != bool(code & 1)
+
+    def _jump_relative(self, displacement):
+        self.ip = (self.ip + displacement) & 0xFFFF
+
+    def JCC(self, op_code):  # 70-7F (60-6F are undocumented aliases on the 8086)
+        displacement = self.fetch_signed8()
+        if self._condition(op_code & 0x0F):
+            self._jump_relative(displacement)
+
+    def JMP_SHORT(self, op_code):  # EB
+        self._jump_relative(self.fetch_signed8())
+
+    def JMP_NEAR(self, op_code):  # E9
+        self._jump_relative(self.fetch16())
+
+    def JMP_FAR(self, op_code):  # EA
+        offset = self.fetch16()
+        self.sregs[CS] = self.fetch16()
+        self.ip = offset
+
+    def CALL_NEAR(self, op_code):  # E8
+        displacement = self.fetch16()
+        self.push(self.ip)
+        self._jump_relative(displacement)
+
+    def CALL_FAR(self, op_code):  # 9A
+        offset = self.fetch16()
+        segment = self.fetch16()
+        self.push(self.sregs[CS])
+        self.push(self.ip)
+        self.sregs[CS], self.ip = segment, offset
+
+    def RET_NEAR(self, op_code):  # C2 iw, C3 (C0/C1 are undocumented aliases)
+        release = self.fetch16() if not op_code & 1 else 0
+        self.ip = self.pop()
+        self.regs[SP] = (self.regs[SP] + release) & 0xFFFF
+
+    def RET_FAR(self, op_code):  # CA iw, CB (C8/C9 are undocumented aliases)
+        release = self.fetch16() if not op_code & 1 else 0
+        self.ip = self.pop()
+        self.sregs[CS] = self.pop()
+        self.regs[SP] = (self.regs[SP] + release) & 0xFFFF
+
+    def LOOP(self, op_code):  # E0 LOOPNE, E1 LOOPE, E2 LOOP
+        displacement = self.fetch_signed8()
+        self.regs[CX] = (self.regs[CX] - 1) & 0xFFFF
+        taken = self.regs[CX] != 0
+        if op_code == 0xE0:
+            taken = taken and not self.flags & ZF
+        elif op_code == 0xE1:
+            taken = taken and bool(self.flags & ZF)
+        if taken:
+            self._jump_relative(displacement)
+
+    def JCXZ(self, op_code):  # E3
+        displacement = self.fetch_signed8()
+        if self.regs[CX] == 0:
+            self._jump_relative(displacement)
+
+    def INT3(self, op_code):  # CC
+        self.interrupt(3)
+
+    def INT(self, op_code):  # CD ib
+        self.interrupt(self.fetch8())
+
+    def INTO(self, op_code):  # CE
+        if self.flags & OF:
+            self.interrupt(4)
+
+    def IRET(self, op_code):  # CF
+        self.ip = self.pop()
+        self.sregs[CS] = self.pop()
+        self.FLAG = self.pop()
+
+    def _call_indirect(self):  # FF /2
+        target = self._get_rm(1)
+        self.push(self.ip)
+        self.ip = target
+
+    def _call_far_indirect(self):  # FF /3
+        if self._ea is None:
+            return  # undefined register form
+        offset, segment = self._ea_word(), self._ea_word(2)
+        self.push(self.sregs[CS])
+        self.push(self.ip)
+        self.sregs[CS], self.ip = segment, offset
+
+    def _jmp_indirect(self):  # FF /4
+        self.ip = self._get_rm(1)
+
+    def _jmp_far_indirect(self):  # FF /5
+        if self._ea is None:
+            return  # undefined register form
+        self.ip, self.sregs[CS] = self._ea_word(), self._ea_word(2)
+
+    def _push_rm(self):  # FF /6 (/7 is an undocumented alias)
+        if self._ea is None and self._rm == SP:
+            self.PUSH_R(0x50 | SP)
+        else:
+            self.push(self._get_rm(1))
+
     # ------------------------------------------------- processor control group
 
     def CMC(self, op_code):  # F5
@@ -731,4 +856,18 @@ _register([
     ((0xF6, 0xF7), 'GRP3'),
     ((0xFE,), 'GRP4'),
     ((0xFF,), 'GRP5'),
+    (range(0x60, 0x80), 'JCC'),
+    ((0xEB,), 'JMP_SHORT'),
+    ((0xE9,), 'JMP_NEAR'),
+    ((0xEA,), 'JMP_FAR'),
+    ((0xE8,), 'CALL_NEAR'),
+    ((0x9A,), 'CALL_FAR'),
+    ((0xC0, 0xC1, 0xC2, 0xC3), 'RET_NEAR'),
+    ((0xC8, 0xC9, 0xCA, 0xCB), 'RET_FAR'),
+    ((0xE0, 0xE1, 0xE2), 'LOOP'),
+    ((0xE3,), 'JCXZ'),
+    ((0xCC,), 'INT3'),
+    ((0xCD,), 'INT'),
+    ((0xCE,), 'INTO'),
+    ((0xCF,), 'IRET'),
 ])

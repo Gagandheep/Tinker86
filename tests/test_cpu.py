@@ -97,7 +97,6 @@ class Foundation(unittest.TestCase):
             cpu.step()
 
 
-
 class Arithmetic(unittest.TestCase):
 
     def test_or_is_bitwise(self):
@@ -136,6 +135,49 @@ class Arithmetic(unittest.TestCase):
         cpu = run([0x27], AX=0x009D)
         self.assertEqual(cpu.AL, 0x03)
         self.assertTrue(cpu.get_flag('CF'))
+
+
+
+class ControlFlow(unittest.TestCase):
+
+    def test_jg_uses_sign_overflow_and_zero(self):
+        cpu = cpu_with([0x7F, 0x10])  # jg +10h
+        cpu.set_flags(SF=True, OF=True, ZF=False)
+        cpu.step()
+        self.assertEqual(cpu.IP, 0x12)
+        cpu = cpu_with([0x7F, 0x10])
+        cpu.set_flags(ZF=True)
+        cpu.step()
+        self.assertEqual(cpu.IP, 0x02)
+
+    def test_call_and_ret(self):
+        # call +3 ; hlt ; (pad) ; ret
+        cpu = run([0xE8, 0x02, 0x00, 0xF4, 0x90, 0xC3], steps=3)
+        self.assertTrue(cpu.halted)
+        self.assertEqual(cpu.SP, 0x0100)
+
+    def test_int_uses_vector_table_and_iret_returns(self):
+        cpu = cpu_with([0xCD, 0x21, 0xF4])  # int 21h ; hlt
+        cpu.write16(0, 0x21 * 4, 0x0000)  # handler at 0500:0000 is a single IRET
+        cpu.write16(0, 0x21 * 4 + 2, 0x0500)
+        cpu.memory[0x5000] = 0xCF
+        cpu.step()
+        self.assertEqual((cpu.CS, cpu.IP), (0x0500, 0))
+        cpu.step()
+        self.assertEqual((cpu.CS, cpu.IP), (CODE_SEGMENT, 2))
+
+    def test_interrupt_hook_for_empty_vector(self):
+        cpu = cpu_with([0xCD, 0x21])
+        seen = []
+        cpu.interrupt_hooks[0x21] = lambda c: seen.append(c.AH)
+        cpu.AH = 0x4C
+        cpu.step()
+        self.assertEqual(seen, [0x4C])
+        self.assertEqual(cpu.IP, 2)
+
+    def test_loop(self):
+        cpu = run([0xE2, 0xFE], steps=3, CX=3)  # loop $
+        self.assertEqual((cpu.CX, cpu.IP), (0, 2))
 
 
 if __name__ == '__main__':
