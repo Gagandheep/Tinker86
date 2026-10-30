@@ -1,6 +1,7 @@
-"""End-to-end: assemble examples/hello.asm with the real TASM/TLINK in DOSBox, run it,
-and follow it in the source. Skipped unless DOSBox and the Turbo Assembler binaries
-are available (external/tasm/BIN, or TASM_DIR)."""
+"""End-to-end: assemble examples/hello.asm with the real assemblers, run it and follow it
+in the source. The TASM test needs DOSBox and the Turbo Assembler binaries
+(external/tasm/BIN, or TASM_DIR); the JWasm test needs JWasm (tools/build_jwasm.sh).
+Each is skipped when its toolchain is missing."""
 import os
 import shutil
 import sys
@@ -16,25 +17,23 @@ from Microprocessor import Microprocessor  # noqa: E402
 from Microprocessor.dos import DOS  # noqa: E402
 
 
-def toolchain_available():
-    try:
-        Assembler.check_toolchain()
-        Assembler.dosbox_executable()
-    except Assembler.AssemblerError:
-        return False
-    return True
-
-
-@unittest.skipUnless(toolchain_available(), 'needs DOSBox and TASM.EXE/TLINK.EXE')
 class RealBuild(unittest.TestCase):
 
-    def test_hello_example(self):
+    @unittest.skipUnless(Assembler.tasm_available(), 'needs DOSBox and TASM.EXE/TLINK.EXE')
+    def test_hello_example_with_tasm(self):
+        self.build_and_follow('tasm')
+
+    @unittest.skipUnless(Assembler.jwasm_available(), 'needs JWasm')
+    def test_hello_example_with_jwasm(self):
+        self.build_and_follow('jwasm')
+
+    def build_and_follow(self, assembler):
         with tempfile.TemporaryDirectory() as directory:
             source = os.path.join(directory, 'HELLO.ASM')
             shutil.copy(os.path.join(ROOT, 'examples', 'hello.asm'), source)
-            success, log, exe = Assembler.tasm_tlink(source)
+            success, log, exe, used = Assembler.build(source, assembler)
             self.assertTrue(success, log)
-            self.assertIn('Error messages:    None', log)
+            self.assertEqual(used, assembler)
             cpu = Microprocessor()
             printed = []
             DOS(cpu, output=printed.append, root=directory)

@@ -11,3 +11,4 @@ __pycache__
 tests/data
 .DS_Store
 !examples/*.asm
+external/jwasm/

@@ -226,6 +226,27 @@ class MainWindowTests(unittest.TestCase):
         self.assertIn('No source view', self.ui.textOutput.toPlainText())
         self.assertIsNone(self.ui.sourceMap)
 
+    def test_build_and_debug_with_jwasm(self):
+        import Assembler
+        if not Assembler.jwasm_available():
+            self.skipTest('needs JWasm')
+        import shutil
+        source = os.path.join(self.tmp.name, 'HELLO.ASM')
+        shutil.copy(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures', 'HELLO.ASM'), source)
+        self.ui.newTab(source)
+        next(a for a in self.ui.assemblerChoice.actions() if a.data() == 'jwasm').setChecked(True)
+        self.assertTrue(self.ui.build(), self.ui.textOutput.toPlainText())
+        self.assertIn('[JWasm]', self.ui.textOutput.toPlainText())
+        self.ui.debug()
+        editor = self.ui.sourceEditor()
+        self.assertEqual(editor.currentLine, 6)
+        editor.gutterClicked.emit(10)
+        self.ui.run()
+        self.run_until_stopped()
+        self.assertEqual(editor.currentLine, 10)
+        watchpoint = self.ui.addWatchpointFromText('msg', 5, 'never')
+        self.assertEqual(watchpoint.value(self.window.microprocessor.memory), b'Hello')
+
     def test_bad_watch_expression(self):
         self.load_hello()
         with self.assertRaises(Exception):
@@ -267,6 +288,7 @@ class MainWindowTests(unittest.TestCase):
         import Assembler
         old = Assembler.TASM_BIN
         Assembler.TASM_BIN = self.tmp.name  # no TASM.EXE here
+        next(a for a in self.ui.assemblerChoice.actions() if a.data() == 'tasm').setChecked(True)
         try:
             self.assertFalse(self.ui.build())
         finally:

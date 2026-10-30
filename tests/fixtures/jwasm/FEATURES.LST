@@ -1,0 +1,98 @@
+JWasm v2.21, Oct 30 2026
+FEATURES.ASM
+                                ; macro, INCLUDE, a false conditional block and multi-line data
+                                        .model small
+                                        .stack 100h
+ = 0                            DEBUG = 0
+                                putc    macro ch
+ >                                      mov     dl, ch
+ >                                      mov     ah, 2
+ >                                      int     21h
+ >                                      endm
+0000                                    .data
+0000 3031323334353637383961     big     db      "0123456789abcdefghijklmnopqrstuvwxyz", 0
+0025 0500                       count   dw      5
+0000                                    .code
+0000 B8 0000s                   start:  mov     ax, DGROUP
+0003 8ED8                               mov     ds, ax
+                                        putc    'A'
+0005 B241                    1          mov     dl, 'A'
+0007 B402                    1          mov     ah, 2
+0009 CD21                    1          int     21h
+000B E80600                             call    helper
+                                if DEBUG
+
+                                else
+000E 90                                 nop
+                                endif
+000F B8004C                             mov     ax, 4C00h
+0012 CD21                               int     21h
+                                        include FEATURES.INC
+0014                          C helper  proc
+                              C         putc    'B'
+0014 B242                    1C         mov     dl, 'B'
+0016 B402                    1C         mov     ah, 2
+0018 CD21                    1C         int     21h
+001A C3                       C         ret
+001B                          C helper  endp
+                                        end     start
+
+
+Binary Map:
+
+Segment                  Pos(file)     RVA  Size(fil) Size(mem)
+---------------------------------------------------------------
+<header>                        0        0        30         0
+_TEXT                          30        0        1B        1B
+_DATA                          4C        C        27        27
+STACK                           0       40         0       100
+---------------------------------------------------------------
+                                                  73       150
+
+
+Macros:
+
+                N a m e                 Type
+
+@CatStr  . . . . . . . . . . . .        Func
+@Environ . . . . . . . . . . . .        Func
+@InStr . . . . . . . . . . . . .        Func
+@SizeStr . . . . . . . . . . . .        Func
+@SubStr  . . . . . . . . . . . .        Func
+putc . . . . . . . . . . . . . .        Proc
+
+
+Segments and Groups:
+
+                N a m e                 Size     Length   Align   Combine Class
+
+_TEXT  . . . . . . . . . . . . .        16 Bit   001B     Word    Public  'CODE'
+DGROUP . . . . . . . . . . . . .        GROUP
+_DATA  . . . . . . . . . . . . .        16 Bit   0027     Word    Public  'DATA'
+STACK  . . . . . . . . . . . . .        16 Bit   0100     Para    Stack   'STACK'
+
+
+Procedures, parameters and locals:
+
+                N a m e                 Type     Value    Segment  Length
+
+helper . . . . . . . . . . . . .        P Near   0014     _TEXT    0007 Public   
+
+
+Symbols:
+
+                N a m e                 Type       Value     Attr
+
+@CodeSize  . . . . . . . . . . .        Number             0h 
+@DataSize  . . . . . . . . . . .        Number             0h 
+@Interface . . . . . . . . . . .        Number             0h 
+@Model . . . . . . . . . . . . .        Number             2h 
+@code  . . . . . . . . . . . . .        Text   _TEXT
+@data  . . . . . . . . . . . . .        Text   DGROUP
+@stack . . . . . . . . . . . . .        Text   DGROUP
+DEBUG  . . . . . . . . . . . . .        Number             0h 
+big  . . . . . . . . . . . . . .        Byte[37]           0h _DATA 
+count  . . . . . . . . . . . . .        Word              25h _DATA 
+start  . . . . . . . . . . . . .        L Near             0h _TEXT Public 
+
+FEATURES.ASM: 26 lines, 2 passes, 0 ms, 0 warnings, 0 errors

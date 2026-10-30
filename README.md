@@ -1,8 +1,9 @@
 # 8086 Simulator
 
 A desktop IDE for writing, assembling and debugging Intel 8086 programs.
-Programs are assembled with Turbo Assembler (TASM/TLINK) running inside DOSBox,
-then loaded into a Python emulation of an 8086 PC where you can run or step
+Programs are assembled with JWasm (open source, runs natively) or with Turbo
+Assembler (TASM/TLINK) inside DOSBox, then loaded into a Python emulation of an
+8086 PC where you can run or step
 through them, follow execution in the source, set breakpoints and data
 watchpoints, and inspect the disassembly, registers, memory and text screen.
 
@@ -32,7 +33,7 @@ watchpoints, and inspect the disassembly, registers, memory and text screen.
 - **Debugger UI**:
   - Step (F10), Run (F5), Pause (Shift+F5), Run to Cursor (F4)
   - source view: the line being executed is highlighted in the editor, using
-    the TASM listing and TLINK map the build writes next to the `.EXE`
+    the listing (and, for TASM, the map file) the build writes next to the `.EXE`
   - breakpoints: click the editor gutter, F9, or double-click a row in the
     Disassembly view (source and disassembly share them)
   - data watchpoints: stop when an instruction writes, reads or accesses a
@@ -48,12 +49,22 @@ watchpoints, and inspect the disassembly, registers, memory and text screen.
 
 - Python 3.8+
 - PyQt5: `pip install -r requirements.txt`
-- [DOSBox](https://www.dosbox.com/) on `PATH` (or set the `DOSBOX` environment
-  variable to its executable). Only needed for building.
-- Turbo Assembler binaries. `TASM.EXE` and `TLINK.EXE` are **not** included in
-  this repository; copy them into `external/tasm/BIN/`, or set `TASM_DIR` to a
-  Turbo Assembler directory that has them in its `BIN` folder. The build is
-  tested with TASM 4.1 and TLINK 7.1.
+- An assembler, only needed for building (either one):
+  - **JWasm** (recommended): open source, MASM-compatible, runs natively and
+    writes the DOS `.EXE` itself, so no linker or DOSBox is needed.
+    `tools/build_jwasm.sh` downloads and builds it into `external/jwasm/` (needs
+    git, make and gcc); or put `jwasm` (or `uasm`) on `PATH`, or set `JWASM` to
+    its executable. On Windows, download `jwasm.exe` from the
+    [JWasm releases](https://github.com/Baron-von-Riedesel/JWasm/releases).
+  - **TASM**: Turbo Assembler and Turbo Link run in
+    [DOSBox](https://www.dosbox.com/) (on `PATH`, or set `DOSBOX`).
+    `TASM.EXE` and `TLINK.EXE` are **not** included in this repository; copy
+    them into `external/tasm/BIN/`, or set `TASM_DIR` to a Turbo Assembler
+    directory that has them in its `BIN` folder. Tested with TASM 4.1 and TLINK 7.1.
+
+  **Assembler → Automatic** uses TASM when it is fully installed, else JWasm;
+  the Assembler menu (or the `ASSEMBLER` environment variable: `tasm`, `jwasm`,
+  `auto`) selects one explicitly.
 
 ## Usage
 
@@ -61,9 +72,10 @@ watchpoints, and inspect the disassembly, registers, memory and text screen.
 python main.py
 ```
 
-1. Open or write an `.asm` file (see `examples/hello.asm`). DOS tools need file
-   names of at most 8 characters without spaces.
-2. **Build** (F7) runs TASM and TLINK; their output appears in the Log dock.
+1. Open or write an `.asm` file (see `examples/hello.asm`). With TASM, file
+   names need at most 8 characters without spaces (DOS).
+2. **Build** (F7) runs the assembler (JWasm, or TASM and TLINK); its output
+   appears in the Log dock.
 3. **Debug** (F8) loads the resulting `.EXE`. The current line is highlighted
    in the source and in the Disassembly view. Set breakpoints by clicking the
    gutter (or F9), add watchpoints in the Watch dock, then Step (F10), Run (F5)
@@ -99,10 +111,11 @@ python tests/sst_runner.py --all-statuses --limit 0   # every vector, incl. undo
 SST_TESTS=1 python -m unittest tests.test_disassembler  # disassembler vs. the vector names
 ```
 
-`tests/test_real_build.py` assembles `examples/hello.asm` with the real TASM/TLINK
-in DOSBox, runs it and follows it in the source; it is skipped when DOSBox or the
-Turbo Assembler binaries are not available. `tests/fixtures` holds real TASM 4.1 /
-TLINK 7.1 output (listing, map, executable) for the tests that do not need them.
+`tests/test_real_build.py` assembles `examples/hello.asm` with the real assemblers
+(JWasm, and TASM/TLINK in DOSBox), runs the result and follows it in the source;
+each case is skipped when its toolchain is not installed. `tests/fixtures` holds
+real TASM 4.1 / TLINK 7.1 output and `tests/fixtures/jwasm` real JWasm output
+(listings, maps, executables) for the tests that do not need the tools.
 
 [SingleStepTests/8088](https://github.com/SingleStepTests/8088) contains test
 vectors captured from a real 8088, which has the same instruction set as the
@@ -124,8 +137,9 @@ The UI tests need PyQt5 and run offscreen (`QT_QPA_PLATFORM=offscreen`).
 | `Microprocessor/dos.py` | DOS `INT 20h`/`21h` services |
 | `Microprocessor/dosfs.py` | Host directory as drive C: |
 | `Microprocessor/watchpoints.py` | Address expressions and data watchpoints |
-| `Assembler/__init__.py` | TASM/TLINK in DOSBox |
-| `Assembler/listing.py` | TASM listing / TLINK map parsing for the source view |
+| `Assembler/__init__.py` | Building with JWasm, or TASM/TLINK in DOSBox |
+| `Assembler/listing.py` | Listing (TASM, JWasm) and map parsing for the source view |
+| `tools/build_jwasm.sh` | Downloads and builds JWasm into `external/jwasm/` |
 | `UI/` | PyQt5 main window |
 | `tests/` | Unit tests and the SingleStepTests runner |
 | `external/tasm/` | Turbo Assembler support files and DOSBox config |
@@ -149,11 +163,20 @@ The UI tests need PyQt5 and run offscreen (`QT_QPA_PLATFORM=offscreen`).
 - No 8087 coprocessor: `ESC` instructions decode their operand and do nothing.
 - Timing (clock cycles, prefetch queue, wait states) is not emulated.
 
+**Assemblers**
+- JWasm accepts MASM syntax, which most TASM programs use, but not TASM's Ideal
+  mode or TASM-only directives and options; such programs need TASM.
+- With JWasm on Linux/macOS, `INCLUDE` file names are case-sensitive
+  (`include io.mac` does not find `IO.MAC`).
+- Both builds produce `.EXE` files only (no `.COM` output), from a single source file.
+
 **Debugger**
-- The source view needs the `.LST` listing and `.MAP` file from the build (F7
-  writes both). It follows the main `.asm` file only: lines inside `INCLUDE`d
-  files and macro expansions map to the nearest line of the main file. The parser
-  follows TASM 4.1/TLINK 7.1 output; other assemblers and linkers are not supported.
+- The source view needs the `.LST` listing (and for TASM the `.MAP` file) from
+  the build; F7 writes them. It follows the main `.asm` file only: code from
+  `INCLUDE`d files and macro expansions maps to the line that included or invoked
+  it (JWasm) or to the nearest line of the main file (TASM). Only TASM 4.1/TLINK
+  7.1 and JWasm listings are understood; `.NOLIST`/`.XLIST` in the source hides
+  lines from the listing and breaks the line mapping.
 - Breakpoints and watchpoints use physical addresses. A watchpoint's address is
   worked out when it is added (or when a program is loaded), so `ES:DI` watches
   the address `ES:DI` had then; it does not follow later register changes.

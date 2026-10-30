@@ -1,0 +1,65 @@
+JWasm v2.21, Oct 30 2026
+HELLO.ASM
+                                	.model small
+                                	.stack 100h
+0000                            	.data
+0000 48656C6C6F2C2038303836     msg	db	'Hello, 8086!$'
+0000                            	.code
+0000 B8 0000s                   start:	mov	ax, DGROUP
+0003 8ED8                       	mov	ds, ax
+0005 BA 0000o                   	mov	dx, offset msg
+0008 B409                       	mov	ah, 9
+000A CD21                       	int	21h
+000C B8074C                     	mov	ax, 4C07h
+000F CD21                       	int	21h
+                                	end	start
+
+
+Binary Map:
+
+Segment                  Pos(file)     RVA  Size(fil) Size(mem)
+---------------------------------------------------------------
+<header>                        0        0        30         0
+_TEXT                          30        0        11        11
+_DATA                          42        2         D         D
+STACK                           0       10         0       100
+---------------------------------------------------------------
+                                                  4F       120
+
+
+Macros:
+
+                N a m e                 Type
+
+@CatStr  . . . . . . . . . . . .        Func
+@Environ . . . . . . . . . . . .        Func
+@InStr . . . . . . . . . . . . .        Func
+@SizeStr . . . . . . . . . . . .        Func
+@SubStr  . . . . . . . . . . . .        Func
+
+
+Segments and Groups:
+
+                N a m e                 Size     Length   Align   Combine Class
+
+_TEXT  . . . . . . . . . . . . .        16 Bit   0011     Word    Public  'CODE'
+DGROUP . . . . . . . . . . . . .        GROUP
+_DATA  . . . . . . . . . . . . .        16 Bit   000D     Word    Public  'DATA'
+STACK  . . . . . . . . . . . . .        16 Bit   0100     Para    Stack   'STACK'
+
+
+Symbols:
+
+                N a m e                 Type       Value     Attr
+
+@CodeSize  . . . . . . . . . . .        Number             0h 
+@DataSize  . . . . . . . . . . .        Number             0h 
+@Interface . . . . . . . . . . .        Number             0h 
+@Model . . . . . . . . . . . . .        Number             2h 
+@code  . . . . . . . . . . . . .        Text   _TEXT
+@data  . . . . . . . . . . . . .        Text   DGROUP
+@stack . . . . . . . . . . . . .        Text   DGROUP
+msg  . . . . . . . . . . . . . .        Byte[13]           0h _DATA 
+start  . . . . . . . . . . . . .        L Near             0h _TEXT Public 
+
+HELLO.ASM: 13 lines, 2 passes, 0 ms, 0 warnings, 0 errors

@@ -3,7 +3,8 @@ import os
 from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtCore import Qt
 
-from Assembler import AssemblerError, tasm_tlink
+import Assembler
+from Assembler import AssemblerError
 from Assembler.listing import ListingError, find_companion, load_source_map
 from Microprocessor import InstructionNotImplemented
 from Microprocessor.bios import (BIOS_DATA_SEGMENT, COLUMNS, CURSOR_POSITION, ROWS, SCAN_CODES, VIDEO_SEGMENT,
@@ -1002,6 +1003,16 @@ class UI_MainWindow:
 
         self.menuAssembler = self.menubar.addMenu('&Assembler')
         self.menuAssembler.addAction(self.actionBuild)
+        self.menuAssembler.addSeparator()
+        self.assemblerChoice = QtWidgets.QActionGroup(MainWindow)
+        initial = (os.environ.get('ASSEMBLER') or 'auto').lower()
+        for name, text in (('auto', 'Automatic (TASM if installed, else JWasm)'),
+                           ('tasm', 'TASM + TLINK (DOSBox)'), ('jwasm', 'JWasm')):
+            choice = self.menuAssembler.addAction(text)
+            choice.setCheckable(True)
+            choice.setData(name)
+            choice.setChecked(name == initial or (name == 'auto' and initial not in Assembler.ASSEMBLERS))
+            self.assemblerChoice.addAction(choice)
 
         self.menuDebugger = self.menubar.addMenu('&Debugger')
         self.menuDebugger.addAction(self.actionDebug)
@@ -1164,7 +1175,8 @@ class UI_MainWindow:
             self.dockOutput.setVisible(True)
             self.dockOutput.raise_()
             try:
-                success, log, exe = tasm_tlink(file.path)
+                success, log, exe, used = Assembler.build(file.path, self.selectedAssembler())
+                log = f'[{"TASM + TLINK" if used == "tasm" else "JWasm"}]\n{log}'
             except AssemblerError as e:
                 log = f'Build failed: {e}'
             self.textOutput.setText(log)
@@ -1173,6 +1185,10 @@ class UI_MainWindow:
         file.exe = exe
         self.actionDebug.setEnabled(success)
         return success
+
+    def selectedAssembler(self):
+        checked = self.assemblerChoice.checkedAction()
+        return checked.data() if checked is not None else 'auto'
 
     def setDebugMode(self, enabled):
         self.debugMode = enabled

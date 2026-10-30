@@ -1,8 +1,16 @@
-"""Assemble and link .asm files with Turbo Assembler (TASM/TLINK) running in DOSBox.
+"""Build .asm files into DOS executables with one of two assemblers.
 
-TASM.EXE and TLINK.EXE are not distributed with this repository; copy them
-into external/tasm/BIN (or set TASM_DIR to a Turbo Assembler directory). DOSBox must be installed and on PATH (or named by
-the DOSBOX environment variable).
+- TASM: Turbo Assembler and Turbo Link running in DOSBox. TASM.EXE and
+  TLINK.EXE are not distributed with this repository; copy them into
+  external/tasm/BIN (or set TASM_DIR to a Turbo Assembler directory). DOSBox
+  must be on PATH (or named by the DOSBOX environment variable).
+- JWasm: the open source MASM-compatible assembler, run natively. It writes
+  the .EXE itself (no linker, no DOSBox) and accepts the MASM-style syntax
+  most TASM programs use (not TASM's Ideal mode). Install it on PATH, set
+  JWASM to its executable, or run tools/build_jwasm.sh.
+
+build() picks TASM when it is fully installed, else JWasm (or the one named
+by the ASSEMBLER environment variable).
 """
 import os
 import re
@@ -17,6 +25,8 @@ TASM_DIR = os.environ.get('TASM_DIR') or os.path.join(ROOT, 'external', 'tasm')
 TASM_BIN = os.path.join(TASM_DIR, 'BIN')
 DOSBOX_CONFIG = os.path.join(TASM_BIN, 'dosbox.conf')
 LOG_NAME = 'BUILD.LOG'
+JWASM_LOCAL = os.path.join(ROOT, 'external', 'jwasm', 'jwasm')  # where tools/build_jwasm.sh puts it
+ASSEMBLERS = ('tasm', 'jwasm')
 DOS_NAME = re.compile(r'^[A-Za-z0-9_\-$~!#%&@^]{1,8}$')
 
 
@@ -124,3 +134,88 @@ def tasm_tlink(source):
     exe = find_file(directory, base + '.exe')
     success = build_succeeded(log) and exe is not None
     return success, log, exe if success else None
+
+
+def jwasm_executable():
+    configured = os.environ.get('JWASM')
+    if configured:
+        return configured
+    for name in ('jwasm', 'uasm', 'JWasm'):
+        found = shutil.which(name)
+        if found:
+            return found
+    for candidate in (JWASM_LOCAL, JWASM_LOCAL + '.exe'):
+        if os.path.exists(candidate):
+            return candidate
+    raise AssemblerError('JWasm was not found; install it on PATH, set the JWASM environment variable, '
+                         'or run tools/build_jwasm.sh')
+
+
+def jwasm(source):
+    """Assemble source with JWasm into NAME.EXE with listing NAME.LST.
+    Returns (success, log, path of the .EXE or None)."""
+    executable = jwasm_executable()
+    directory, filename = os.path.split(os.path.abspath(source))
+    base = os.path.splitext(filename)[0]
+    exe = os.path.join(directory, base + '.EXE')
+    for stale in (exe, find_file(directory, base + '.exe')):
+        if stale and os.path.exists(stale):
+            os.remove(stale)
+    # -mz: DOS executable without a linker; -Sx: list false conditional blocks so the
+    # listing keeps one line per source line (Assembler.listing.parse_jwasm_listing)
+    command = [executable, '-mz', '-Sx', f'-Fl={base}.LST', f'-Fo={base}.EXE', filename]
+    try:
+        result = subprocess.run(command, cwd=directory, capture_output=True, text=True, errors='replace',
+                                check=False)
+    except OSError as e:
+        raise AssemblerError(f'cannot run JWasm ({executable}): {e}')
+    log = (result.stdout + result.stderr).replace('\r\n', '\n')
+    success = result.returncode == 0 and os.path.exists(exe)
+    return success, log, exe if success else None
+
+
+def tasm_available():
+    try:
+        check_toolchain()
+        dosbox_executable()
+    except AssemblerError:
+        return False
+    return True
+
+
+def jwasm_available():
+    try:
+        jwasm_executable()
+    except AssemblerError:
+        return False
+    return True
+
+
+def available_assemblers():
+    """The assemblers that can be used right now, preferred first."""
+    return [name for name, available in (('tasm', tasm_available), ('jwasm', jwasm_available)) if available()]
+
+
+def choose_assembler(assembler=None):
+    """Resolve 'auto'/None (or $ASSEMBLER) to an installed assembler; raises AssemblerError."""
+    assembler = (assembler or os.environ.get('ASSEMBLER') or 'auto').lower()
+    if assembler == 'auto':
+        available = available_assemblers()
+        if not available:
+            raise AssemblerError('no assembler found: install JWasm (tools/build_jwasm.sh) or DOSBox with '
+                                 f'TASM.EXE and TLINK.EXE in {TASM_BIN}')
+        return available[0]
+    if assembler not in ASSEMBLERS:
+        raise AssemblerError(f'unknown assembler {assembler!r} (use tasm, jwasm or auto)')
+    return assembler
+
+
+def build(source, assembler=None):
+    """Build source into a DOS executable. assembler: 'tasm', 'jwasm' or 'auto' (default).
+    Returns (success, log, path of the .EXE or None, assembler used)."""
+    assembler = choose_assembler(assembler)
+    if assembler == 'tasm':
+        success, log, exe = tasm_tlink(source)
+    else:
+        success, log, exe = jwasm(source)
+    return success, log, exe, assembler
