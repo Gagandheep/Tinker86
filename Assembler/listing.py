@@ -5,23 +5,29 @@ plus the symbol table; the TLINK .MAP file gives where each segment starts
 in the executable image. Together with the segment the program was loaded at,
 that yields physical addresses for source lines and symbols.
 
-Listing lines look like this once tabs are expanded (source from column 40):
+Listing lines look like this once tabs are expanded. The offset field is four
+characters wide for 16-bit code and eight (right-aligned) when 32-bit segments
+may occur; the source text follows 25 columns after it:
 
          1         2         3         4
-    0123456789012345678901234567890123456789
-         17    0000  50 6C 65 61 73 65 20+  msg DB 'Please type a character',0
-         49    0010  68 0063r                push OFFSET address
-    1    43                                  (a line of an INCLUDEd file)
+    01234567890123456789012345678901234567890
+         14 0000  B8 0000s               start:  mov     ax, @data
+         17 0005  BA 0000r                       mov     dx, offset message
+         49     0010  68 0063r                   push OFFSET address   (8-wide)
+    1    43                                      (a line of an INCLUDEd file)
 """
 import bisect
 import os
 import re
 
-SOURCE_COLUMN = 40
+OFFSET_COLUMN = 8
+BYTES_WIDTH = 25  # columns between the offset field and the source text
+WRAP_COLUMN = 120  # TASM wraps listing lines at 132 columns, ending them with '+'
 SYMBOL_SIZES = {'byte': 1, 'word': 2, 'dword': 4, 'pword': 6, 'fword': 6, 'qword': 8, 'tbyte': 10}
 SIMPLIFIED_SEGMENTS = {'.data': '_DATA', '.stack': 'STACK', '.const': 'CONST', '.data?': '_BSS',
                        '.fardata': 'FAR_DATA', '.fardata?': 'FAR_BSS'}
 _HEX4 = re.compile(r'^[0-9A-Fa-f]{4}$')
+_OFFSET_FIELD = re.compile(r'^( {4}[0-9A-Fa-f]{4}|[0-9A-Fa-f]{8}|[0-9A-Fa-f]{4})(?=\s|$)')
 _SEGMENT = re.compile(r'^\s*(?:(\w+)\s+)?(segment|ends)\b', re.IGNORECASE)
 _SIMPLIFIED = re.compile(r'^\s*(\.code|\.data\??|\.stack|\.const|\.fardata\??)(?=\s|$|;)', re.IGNORECASE)
 _SYMBOL = re.compile(r'^(\S+)\s+(Byte|Word|Dword|Pword|Fword|Qword|Tbyte|Near|Far|Number|Text|Alias|'
@@ -61,17 +67,30 @@ def parse_listing(path):
         text = f.read()
     raw_lines = text.replace('\f', '\n').splitlines()
     symbols, groups, code_segment = _parse_tables(raw_lines)
+    width = _offset_width(raw_lines)
+    source_column = OFFSET_COLUMN + width + BYTES_WIDTH
     lines = []
     segment = None
+    # TASM numbers listing lines, not source lines: bytes that do not fit (a field
+    # ending in '+') and long source lines wrapped at 132 columns get numbered
+    # lines of their own. Count the source lines of the main file instead.
+    number = 0
+    continued = False
     for raw in raw_lines:
-        expanded = raw.expandtabs(8)
-        head = expanded[:7]
-        if len(head) < 7 or not head[1:].strip().isdigit():
-            continue  # page headers, continuation lines, tables
+        expanded = raw.expandtabs(8).rstrip()
+        head = expanded[:7].ljust(7)
+        if not head[1:].strip().isdigit():
+            continue  # page headers, tables
         if head[0] != ' ':
             continue  # nesting level: a line from an INCLUDEd file or macro expansion
-        number = int(head[1:])
-        source = expanded[SOURCE_COLUMN:]
+        offset_field = expanded[OFFSET_COLUMN:OFFSET_COLUMN + width].strip()
+        bytes_field = expanded[OFFSET_COLUMN + width:source_column].strip()
+        continuation = continued and not offset_field
+        continued = bytes_field.endswith('+') or (len(expanded) >= WRAP_COLUMN and expanded.endswith('+'))
+        if continuation:
+            continue
+        number += 1
+        source = expanded[source_column:]
         code = _strip_comment(source)
         # A .CODE/.DATA line shows the offset reached in the segment it leaves, a
         # SEGMENT line the offset in the segment it opens, an ENDS line its own segment's.
@@ -86,14 +105,25 @@ def parse_listing(path):
                 segment = line_segment = explicit.group(1).upper()
             else:
                 segment = None
-        offset_text = expanded[8:16].strip()
-        if not _HEX4.match(offset_text):
+        offset_text = offset_field
+        if not _HEX4.match(offset_text[-4:]) or not all(c in '0123456789ABCDEFabcdef' for c in offset_text):
             continue
-        has_bytes = bool(expanded[16:SOURCE_COLUMN].strip())
+        has_bytes = bool(bytes_field)
         lines.append(ListingLine(number, line_segment, int(offset_text, 16), has_bytes, source.strip()))
     if not lines:
         raise ListingError(f'{path}: no source lines with offsets found')
     return Listing(lines, symbols, groups, code_segment)
+
+
+def _offset_width(raw_lines):
+    """4 or 8: the width of the offset field, from the first numbered line that has one."""
+    for raw in raw_lines:
+        expanded = raw.expandtabs(8)
+        if len(expanded) > OFFSET_COLUMN and expanded[1:7].strip().isdigit():
+            match = _OFFSET_FIELD.match(expanded[OFFSET_COLUMN:])
+            if match:
+                return len(match.group(1))
+    return 4
 
 
 def _strip_comment(source):

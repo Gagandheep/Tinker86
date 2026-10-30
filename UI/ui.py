@@ -343,6 +343,7 @@ class CodeEditor(QtWidgets.QPlainTextEdit):
     def __init__(self, parent=None):
         super(CodeEditor, self).__init__(parent)
         self.gutter = LineNumberArea(self)
+        self.setLineWrapMode(QtWidgets.QPlainTextEdit.NoWrap)  # keep one source line per row
         self.breakpointLines = set()
         self.currentLine = None
         self.blockCountChanged.connect(self.updateGutterWidth)

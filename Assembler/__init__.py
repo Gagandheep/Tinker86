@@ -1,7 +1,7 @@
 """Assemble and link .asm files with Turbo Assembler (TASM/TLINK) running in DOSBox.
 
 TASM.EXE and TLINK.EXE are not distributed with this repository; copy them
-into external/tasm/BIN. DOSBox must be installed and on PATH (or named by
+into external/tasm/BIN (or set TASM_DIR to a Turbo Assembler directory). DOSBox must be installed and on PATH (or named by
 the DOSBOX environment variable).
 """
 import os
@@ -12,7 +12,8 @@ import sys
 import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TASM_DIR = os.path.join(ROOT, 'external', 'tasm')
+# TASM_DIR may point at another Turbo Assembler installation (it needs BIN\TASM.EXE)
+TASM_DIR = os.environ.get('TASM_DIR') or os.path.join(ROOT, 'external', 'tasm')
 TASM_BIN = os.path.join(TASM_DIR, 'BIN')
 DOSBOX_CONFIG = os.path.join(TASM_BIN, 'dosbox.conf')
 LOG_NAME = 'BUILD.LOG'

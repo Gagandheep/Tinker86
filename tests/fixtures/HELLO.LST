@@ -1,35 +1,46 @@
-Turbo Assembler	 Version 4.1	    10/30/26 12:00:00	    Page 1
-hello.asm
+Turbo Assembler	 Version 4.1	    10/30/26 06:49:51	    Page 1
+x:\HELLO.asm
 
 
 
-      1	    0000			 	.model small
-      2	    0000			 	.stack 100h
-      3	    0000			 	.data
-      4	    0000  48 65 6C 6C 6F 2C+	 msg	db	'Hello, 8086!$'
-		  20 38 30 38 36 21+
-		  24
-      5	    000D			 	.code
-      6	    0000  B8 0000s		 start:	mov	ax, @data
-      7	    0003  8E D8			 	mov	ds, ax
-      8	    0005  BA 0000r		 	mov	dx, offset msg
-      9	    0008  B4 09			 	mov	ah, 9
-     10	    000A  CD 21			 	int	21h
-     11	    000C  B8 4C07		 	mov	ax, 4C07h
-     12	    000F  CD 21			 	int	21h
-     13					 	end	start
-Turbo Assembler	 Version 4.1	    10/30/26 12:00:00	    Page 2
+      1	0000				     .model small
+      2	0000				     .stack 100h
+      3	0000				     .data
+      4	0000  48 65 6C 6C 6F 2C	20+  msg     db	     'Hello, 8086!$'
+      5	      38 30 38 36 21 24
+      6	000D				     .code
+      7	0000  B8 0000s		     start:  mov     ax, @data
+      8	0003  8E D8			     mov     ds, ax
+      9	0005  BA 0000r			     mov     dx, offset	msg
+     10	0008  B4 09			     mov     ah, 9
+     11	000A  CD 21			     int     21h
+     12	000C  B8 4C07			     mov     ax, 4C07h
+     13	000F  CD 21			     int     21h
+     14					     end     start
+Turbo Assembler	 Version 4.1	    10/30/26 06:49:51	    Page 2
 Symbol Table
+
 
 
 
 Symbol Name			  Type	 Value
 
 ??DATE				  Text	 "10/30/26"
-??FILENAME			  Text	 "hello   "
+??FILENAME			  Text	 "HELLO	  "
+??TIME				  Text	 "06:49:51"
+??VERSION			  Number 040A
+@32BIT				  Text	 0
 @CODE				  Text	 _TEXT
+@CODESIZE			  Text	 0
+@CPU				  Text	 0101H
+@CURSEG				  Text	 _TEXT
 @DATA				  Text	 DGROUP
+@DATASIZE			  Text	 0
+@FILENAME			  Text	 HELLO
+@INTERFACE			  Text	 000H
 @MODEL				  Text	 2
+@STACK				  Text	 DGROUP
+@WORDSIZE			  Text	 2
 MSG				  Byte	 DGROUP:0000
 START				  Near	 _TEXT:0000
 
@@ -37,6 +48,6 @@ Groups & Segments		  Bit Size Align  Combine Class
 
 DGROUP				  Group
   STACK				  16  0100 Para	  Stack	  STACK
-  _DATA				  16  000D Para	  Public  DATA
+  _DATA				  16  000D Word	  Public  DATA
 _TEXT				  16  0011 Word	  Public  CODE
 
