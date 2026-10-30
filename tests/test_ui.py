@@ -131,6 +131,108 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(model.rows[1].offset, 1)
         self.assertEqual(model.current, 1)
 
+    def test_watchpoint_stops_run_and_reports_change(self):
+        # mov ax,2 ; mov ds,ax ; mov byte ptr [3], 41h ; mov byte ptr [3], 42h ; mov ax,4C00h ; int 21h
+        code = bytes([0xB8, 0x02, 0x00, 0x8E, 0xD8, 0xC6, 0x06, 0x03, 0x00, 0x41,
+                      0xC6, 0x06, 0x03, 0x00, 0x42, 0xB8, 0x00, 0x4C, 0xCD, 0x21]).ljust(32, b'\x90')
+        self.load_exe(code + bytes(16), relocations=[(1, 0)], ss=3, sp=0x80)
+        cpu = self.window.microprocessor
+        self.ui.step()
+        self.ui.step()  # DS now points at the data paragraph
+        watchpoint = self.ui.addWatchpointFromText('DS:3', 1, 'write')
+        self.assertEqual(watchpoint.address, cpu.physical_address(cpu.DS, 3))
+        self.assertEqual(self.ui.tableWatch.rowCount(), 1)
+        model = self.ui.memoryModels[1]  # the Data view shows DS
+        self.assertIsNotNone(model.data(model.index(0, 3), QtCore.Qt.BackgroundRole))
+        self.ui.run()
+        self.run_until_stopped()
+        log = self.ui.textOutput.toPlainText()
+        self.assertIn('Watchpoint DS:3', log)
+        self.assertIn('written by the instruction at', log)
+        self.assertIn('00 -> 41', log)
+        self.assertEqual(self.ui.tableWatch.item(0, 4).text(), '41')
+        self.assertEqual(cpu.IP, 10)  # stopped right after the writing instruction
+        self.ui.run()
+        self.run_until_stopped()
+        self.assertIn('41 -> 42', self.ui.textOutput.toPlainText())
+        self.ui.tableWatch.cellWidget(0, 3).setCurrentText('never')  # display only from now on
+        self.ui.run()
+        self.run_until_stopped()
+        self.assertTrue(cpu.halted)
+        self.ui.tableWatch.selectRow(0)
+        self.ui.removeWatchpoint()
+        self.assertEqual(self.ui.watches.items, [])
+
+    def load_hello_with_source(self):
+        """HELLO.ASM with its TASM listing and TLINK map (tests/fixtures) and a matching .EXE."""
+        import shutil
+        fixtures = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures')
+        for name in ('HELLO.ASM', 'HELLO.LST', 'HELLO.MAP'):
+            shutil.copy(os.path.join(fixtures, name), self.tmp.name)
+        exe = os.path.join(self.tmp.name, 'HELLO.EXE')
+        with open(exe, 'wb') as f:
+            f.write(make_exe(HELLO_CODE + HELLO_DATA, relocations=[(1, 0)], ss=3, sp=0x100))
+        source = os.path.join(self.tmp.name, 'HELLO.ASM')
+        os.utime(source, (0, 0))  # older than the listing
+        self.ui.newTab(source)
+        self.ui.files[self.ui.tabbedFilesWidget.currentWidget()].exe = exe
+        self.ui.debug()
+        return self.ui.sourceEditor()
+
+    def test_source_view_follows_execution(self):
+        editor = self.load_hello_with_source()
+        self.assertIsNotNone(self.ui.sourceMap)
+        self.assertNotIn('No source view', self.ui.textOutput.toPlainText())
+        self.assertNotIn('changed since it was built', self.ui.textOutput.toPlainText())
+        self.assertEqual(editor.currentLine, 6)  # start: mov ax, @data
+        self.ui.step()
+        self.assertEqual(editor.currentLine, 7)
+        self.assertEqual(editor.textCursor().blockNumber() + 1, 7)
+        self.ui.step()
+        self.assertEqual(editor.currentLine, 8)
+
+    def test_source_breakpoints_and_run_to_line(self):
+        editor = self.load_hello_with_source()
+        cpu = self.window.microprocessor
+        editor.gutterClicked.emit(10)  # int 21h (print)
+        self.assertEqual(editor.breakpointLines, {10})
+        address = self.ui.sourceMap.address_for_line(10)
+        self.assertIn(address, self.ui.breakpoints)
+        row = self.ui.disassemblyModel.rowByOffset[address - (cpu.CS << 4)]
+        self.assertEqual(self.ui.disassemblyModel.data(self.ui.disassemblyModel.index(row, 0)), '\u25CF')
+        self.ui.run()
+        self.run_until_stopped()
+        self.assertEqual(editor.currentLine, 10)
+        self.assertNotIn('Hello', self.ui.textOutput.toPlainText())
+        editor.gutterClicked.emit(1)  # no code on line 1: the next line with code (6) is used
+        self.assertIn(self.ui.sourceMap.address_for_line(6), self.ui.breakpoints)
+        self.ui.runToSourceLine(12)
+        self.run_until_stopped()
+        self.assertEqual(editor.currentLine, 12)
+        self.assertIn('Hello, 8086!', self.ui.textOutput.toPlainText())
+        self.ui.clearBreakpoints()
+        self.assertEqual(editor.breakpointLines, set())
+        self.ui.exitDebug()
+        self.assertIsNone(editor.currentLine)
+
+    def test_watch_symbol_from_listing(self):
+        self.load_hello_with_source()
+        cpu = self.window.microprocessor
+        watchpoint = self.ui.addWatchpointFromText('msg', 0, 'never')
+        self.assertEqual(watchpoint.size, 1)  # 'msg db ...' is a byte symbol
+        self.assertEqual(cpu.memory[watchpoint.address], ord('H'))
+        self.assertEqual(self.ui.addWatchpointFromText('msg+7', 5, 'never').value(cpu.memory), b'8086!')
+
+    def test_stale_or_missing_listing_is_reported(self):
+        self.load_hello()  # PROGRAM.EXE has no listing next to it
+        self.assertIn('No source view', self.ui.textOutput.toPlainText())
+        self.assertIsNone(self.ui.sourceMap)
+
+    def test_bad_watch_expression(self):
+        self.load_hello()
+        with self.assertRaises(Exception):
+            self.ui.addWatchpointFromText('nonsense:zz')
+
     def test_edit_register_and_memory(self):
         self.load_hello()
         cpu = self.window.microprocessor
