@@ -4,6 +4,7 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtCore import Qt
 
 from Assembler import AssemblerError, tasm_tlink
+from Assembler.listing import ListingError, find_companion, load_source_map
 from Microprocessor import InstructionNotImplemented
 from Microprocessor.bios import (BIOS_DATA_SEGMENT, COLUMNS, CURSOR_POSITION, ROWS, SCAN_CODES, VIDEO_SEGMENT,
                                  BIOSServiceNotImplemented)
@@ -318,6 +319,114 @@ class DisassemblyModel(QtCore.QAbstractTableModel):
         return None
 
 
+class LineNumberArea(QtWidgets.QWidget):
+    def __init__(self, editor):
+        super(LineNumberArea, self).__init__(editor)
+        self.editor = editor
+
+    def sizeHint(self):
+        return QtCore.QSize(self.editor.gutterWidth(), 0)
+
+    def paintEvent(self, event):
+        self.editor.paintGutter(event)
+
+    def mousePressEvent(self, event):
+        self.editor.gutterClicked.emit(self.editor.lineAt(event.pos().y()))
+
+
+class CodeEditor(QtWidgets.QPlainTextEdit):
+    """Source editor with a gutter: line numbers, breakpoint dots and the current line while debugging."""
+
+    gutterClicked = QtCore.pyqtSignal(int)  # 1-based line number
+    MARKER_WIDTH = 16
+
+    def __init__(self, parent=None):
+        super(CodeEditor, self).__init__(parent)
+        self.gutter = LineNumberArea(self)
+        self.breakpointLines = set()
+        self.currentLine = None
+        self.blockCountChanged.connect(self.updateGutterWidth)
+        self.updateRequest.connect(self.updateGutter)
+        self.updateGutterWidth()
+
+    def gutterWidth(self):
+        digits = len(str(max(1, self.blockCount())))
+        return self.MARKER_WIDTH + self.fontMetrics().horizontalAdvance('9') * max(digits, 3) + 6
+
+    def updateGutterWidth(self, *args):
+        self.setViewportMargins(self.gutterWidth(), 0, 0, 0)
+
+    def updateGutter(self, rect, dy):
+        if dy:
+            self.gutter.scroll(0, dy)
+        else:
+            self.gutter.update(0, rect.y(), self.gutter.width(), rect.height())
+        if rect.contains(self.viewport().rect()):
+            self.updateGutterWidth()
+
+    def resizeEvent(self, event):
+        super(CodeEditor, self).resizeEvent(event)
+        area = self.contentsRect()
+        self.gutter.setGeometry(QtCore.QRect(area.left(), area.top(), self.gutterWidth(), area.height()))
+
+    def setFont(self, font):
+        super(CodeEditor, self).setFont(font)
+        self.updateGutterWidth()
+
+    def lineAt(self, y):
+        return self.cursorForPosition(QtCore.QPoint(0, int(y))).blockNumber() + 1
+
+    def paintGutter(self, event):
+        painter = QtGui.QPainter(self.gutter)
+        painter.fillRect(event.rect(), self.palette().window())
+        block = self.firstVisibleBlock()
+        top = self.blockBoundingGeometry(block).translated(self.contentOffset()).top()
+        height = self.fontMetrics().height()
+        while block.isValid() and top <= event.rect().bottom():
+            bottom = top + self.blockBoundingRect(block).height()
+            if block.isVisible() and bottom >= event.rect().top():
+                line = block.blockNumber() + 1
+                y = int(top)
+                if line in self.breakpointLines:
+                    painter.setBrush(QtGui.QColor(200, 0, 0))
+                    painter.setPen(Qt.NoPen)
+                    size = min(10, height - 4)
+                    painter.drawEllipse(3, y + (height - size) // 2, size, size)
+                if line == self.currentLine:
+                    painter.setBrush(QtGui.QColor(230, 160, 0))
+                    painter.setPen(Qt.NoPen)
+                    middle = y + height // 2
+                    painter.drawPolygon(QtGui.QPolygon([QtCore.QPoint(4, middle - 5), QtCore.QPoint(12, middle),
+                                                        QtCore.QPoint(4, middle + 5)]))
+                painter.setPen(self.palette().color(QtGui.QPalette.Disabled, QtGui.QPalette.Text))
+                painter.drawText(self.MARKER_WIDTH, y, self.gutter.width() - self.MARKER_WIDTH - 4, height,
+                                 Qt.AlignRight, str(line))
+            block = block.next()
+            top = bottom
+
+    def setDebugInfo(self, breakpointLines, currentLine, follow=True):
+        """Show breakpoints and the current line (None clears it); follow scrolls to it."""
+        self.breakpointLines = set(breakpointLines)
+        self.currentLine = currentLine
+        selections = []
+        for line, color in [(n, QtGui.QColor(255, 210, 210)) for n in sorted(self.breakpointLines)] + \
+                           ([(currentLine, QtGui.QColor(255, 225, 140))] if currentLine else []):
+            block = self.document().findBlockByNumber(line - 1)
+            if not block.isValid():
+                continue
+            selection = QtWidgets.QTextEdit.ExtraSelection()
+            selection.format.setBackground(color)
+            selection.format.setProperty(QtGui.QTextFormat.FullWidthSelection, True)
+            selection.cursor = QtGui.QTextCursor(block)
+            selections.append(selection)
+        self.setExtraSelections(selections)
+        if follow and currentLine:
+            cursor = QtGui.QTextCursor(self.document().findBlockByNumber(currentLine - 1))
+            self.setTextCursor(cursor)
+            self.ensureCursorVisible()
+        self.gutter.update()
+
+
 class WatchpointDialog(QtWidgets.QDialog):
     """Asks for an address expression, size and when to stop."""
 
@@ -362,6 +471,7 @@ class UI_MainWindow:
         self.breakpoints = set()  # physical addresses
         self.watches = WatchList(microprocessor)
         self.sourceMap = None  # Assembler.listing.SourceMap of the program being debugged
+        self.sourceTab = None  # the tab showing that program's source
         self.temporaryBreakpoint = None  # used by Run to Cursor
 
     def setupUI(self, MainWindow):
@@ -697,30 +807,84 @@ class UI_MainWindow:
         row = model.rowByOffset.get(cpu.IP)
         if row is not None:
             self.tableDisassembly.scrollTo(model.index(row, 0), QtWidgets.QAbstractItemView.EnsureVisible)
+        self.refreshSource()
+
+    def sourceEditor(self):
+        if self.sourceTab is None or self.sourceTab not in self.files:
+            return None
+        return self.sourceTab.findChild(CodeEditor)
+
+    def currentSourceLine(self):
+        if self.sourceMap is None:
+            return None
+        cpu = self.microprocessor
+        return self.sourceMap.line_for_address(cpu.physical_address(cpu.CS, cpu.IP))
+
+    def refreshSource(self, follow=True):
+        editor = self.sourceEditor()
+        if editor is None:
+            return
+        lines = {line for line, address in self.sourceMap.code_line_address.items() if address in self.breakpoints}
+        editor.setDebugInfo(lines, self.currentSourceLine() if self.debugMode else None, follow)
+
+    def sourceHasFocus(self):
+        editor = self.sourceEditor()
+        return editor is not None and editor.hasFocus()
+
+    def toggleBreakpointAt(self, address):
+        if address in self.breakpoints:
+            self.breakpoints.remove(address)
+        else:
+            self.breakpoints.add(address)
+        self.disassemblyModel.beginResetModel()
+        self.disassemblyModel.endResetModel()
+        self.refreshSource(follow=False)
+
+    def toggleSourceBreakpoint(self, line):
+        if self.sourceMap is None or not self.debugMode:
+            return
+        address = self.sourceMap.address_for_line(line)
+        if address is None:
+            self.log(f'\nNo code at or after line {line}\n')
+            return
+        self.toggleBreakpointAt(address)
+
+    def sourceGutterClicked(self, tab, line):
+        if tab is self.sourceTab:
+            self.toggleSourceBreakpoint(line)
+
+    def runToSourceLine(self, line):
+        address = self.sourceMap.address_for_line(line) if self.sourceMap is not None else None
+        if address is None or not self.debugMode:
+            return
+        self.temporaryBreakpoint = address
+        self.run()
 
     def selectedDisassemblyRow(self):
         index = self.tableDisassembly.currentIndex()
         return index.row() if index.isValid() else None
 
     def toggleBreakpoint(self, row=None):
+        """F9: on the source line with the cursor when the source has focus, else the disassembly row."""
         if type(row) is bool or row is None:
+            if self.sourceHasFocus():
+                self.toggleSourceBreakpoint(self.sourceEditor().textCursor().blockNumber() + 1)
+                return
             row = self.selectedDisassemblyRow()
         if row is None or not 0 <= row < len(self.disassemblyModel.rows):
             return
-        offset = self.disassemblyModel.rows[row].offset
-        address = self.disassemblyModel.physical(offset)
-        if address in self.breakpoints:
-            self.breakpoints.remove(address)
-        else:
-            self.breakpoints.add(address)
-        self.disassemblyModel.offsetChanged(offset)
+        self.toggleBreakpointAt(self.disassemblyModel.physical(self.disassemblyModel.rows[row].offset))
 
     def clearBreakpoints(self):
         self.breakpoints.clear()
         self.disassemblyModel.beginResetModel()
         self.disassemblyModel.endResetModel()
+        self.refreshSource(follow=False)
 
     def runToCursor(self):
+        if self.sourceHasFocus():
+            self.runToSourceLine(self.sourceEditor().textCursor().blockNumber() + 1)
+            return
         row = self.selectedDisassemblyRow()
         if row is None or not self.debugMode:
             return
@@ -890,10 +1054,11 @@ class UI_MainWindow:
         tab = QtWidgets.QWidget()
         tab.setObjectName(f"tab{file.id}")
         verticalLayout = QtWidgets.QVBoxLayout(tab)
-        plainTextEdit = QtWidgets.QPlainTextEdit(tab)
+        plainTextEdit = CodeEditor(tab)
         plainTextEdit.setFont(QtGui.QFont('monospace', 10))
         plainTextEdit.setPlainText(file.data)
         plainTextEdit.textChanged.connect(lambda: self.textEdited(tab))
+        plainTextEdit.gutterClicked.connect(lambda line: self.sourceGutterClicked(tab, line))
         verticalLayout.addWidget(plainTextEdit)
         self.files[tab] = file
         self.tabbedFilesWidget.addTab(tab, self.tabTitle(file))
@@ -1021,6 +1186,8 @@ class UI_MainWindow:
         self.dockWatch.setVisible(enabled)
         if enabled:
             self.mainWindow.resizeDocks([self.dockDisassembly], [480], Qt.Horizontal)
+            # leave room for the source: the bottom docks (log, screen, memory) scroll
+            self.mainWindow.resizeDocks([self.dockOutput], [max(220, self.mainWindow.height() // 3)], Qt.Vertical)
         for dockSegmentView in self.dockWidgetSegmentViews:
             dockSegmentView.setVisible(enabled)
         for tab in self.files:
@@ -1048,6 +1215,7 @@ class UI_MainWindow:
             self.log(f'Cannot load {file.exe}: {e}\n')
             return
         self.program = program
+        self.loadSourceMap(tab, file, program)
         self.resumeOnInput = False
         self.dos.bios.keyboard.clear()
         self.setDebugMode(True)
@@ -1061,6 +1229,22 @@ class UI_MainWindow:
         self.refreshDisassembly()
         self.updateHighlight()
         self.setRunControls()
+
+    def loadSourceMap(self, tab, file, program):
+        """Use the TASM listing and TLINK map next to the .EXE to follow execution in the source."""
+        self.sourceMap, self.sourceTab = None, None
+        try:
+            sourceMap = load_source_map(file.exe, program.load_segment)
+        except (OSError, ListingError) as e:
+            self.log(f'No source view: {e}\n')
+            return
+        if sourceMap is None:
+            self.log('No source view: the .LST listing or .MAP file is missing (rebuild with F7)\n')
+            return
+        self.sourceMap, self.sourceTab = sourceMap, tab
+        listing = find_companion(file.exe, '.lst')
+        if file.modified or (file.path and os.path.getmtime(file.path) > os.path.getmtime(listing)):
+            self.log('Warning: the source changed since it was built; rebuild (F7) so the lines match\n')
 
     def reresolveWatchpoints(self):
         """After loading, recompute addresses (symbols and segment registers may have moved)."""
@@ -1154,6 +1338,10 @@ class UI_MainWindow:
         self.runTimer.stop()
         self.resumeOnInput = False
         self.setDebugMode(False)
+        editor = self.sourceEditor()
+        if editor is not None:
+            editor.setDebugInfo(set(), None, follow=False)
+        self.sourceMap, self.sourceTab = None, None
         self.updateHighlight()
         self.statusbar.clearMessage()
         self.tabUpdate()

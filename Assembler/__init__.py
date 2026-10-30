@@ -116,7 +116,9 @@ def tasm_tlink(source):
     if stale:
         os.remove(stale)
     setup = [f'mount c "{TASM_DIR}"', f'mount x "{directory}"', 'c:', 'cd BIN']
-    captured = [f'tasm x:\\{base}.asm, x:\\{base}.obj', f'tlink x:\\{base}.obj, x:\\{base}.exe']
+    # the listing and map let the debugger show source lines and symbols (Assembler.listing)
+    captured = [f'tasm /l x:\\{base}.asm, x:\\{base}.obj, x:\\{base}.lst',
+                f'tlink x:\\{base}.obj, x:\\{base}.exe, x:\\{base}.map']
     log = run_in_dosbox(setup, captured)
     exe = find_file(directory, base + '.exe')
     success = build_succeeded(log) and exe is not None
