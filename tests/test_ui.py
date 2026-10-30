@@ -164,14 +164,12 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(self.ui.watches.items, [])
 
     def load_hello_with_source(self):
-        """HELLO.ASM with its TASM listing and TLINK map (tests/fixtures) and a matching .EXE."""
+        """HELLO.ASM as built by TASM/TLINK: listing, map and .EXE from tests/fixtures."""
         import shutil
         fixtures = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures')
-        for name in ('HELLO.ASM', 'HELLO.LST', 'HELLO.MAP'):
+        for name in ('HELLO.ASM', 'HELLO.LST', 'HELLO.MAP', 'HELLO.EXE'):  # real TASM 4.1 / TLINK 7.1 output
             shutil.copy(os.path.join(fixtures, name), self.tmp.name)
         exe = os.path.join(self.tmp.name, 'HELLO.EXE')
-        with open(exe, 'wb') as f:
-            f.write(make_exe(HELLO_CODE + HELLO_DATA, relocations=[(1, 0)], ss=3, sp=0x100))
         source = os.path.join(self.tmp.name, 'HELLO.ASM')
         os.utime(source, (0, 0))  # older than the listing
         self.ui.newTab(source)

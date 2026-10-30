@@ -53,17 +53,40 @@ class ListingTests(unittest.TestCase):
         self.assertEqual(self.map.line_address[4], BASE + 0x20)  # data lines have addresses too
 
     def test_include_and_continuation_lines_are_skipped(self):
-        text = ('      1\t    0000\t\t\t .code\n'
-                '      2\t    0000  B8 0001\t\t mov ax, 1\n'
-                '1     3\t    0003  90\t\t\t nop  ; from an INCLUDE file\n'
-                '\t\t  90 90\n'
-                '      4\t    0004  C3\t\t\t ret\n')
+        text = ('      1\t0000\t\t\t\t .code\n'
+                '      2\t0000  B8 0001\t\t\t mov ax, 1\n'
+                '      3\t\t\t\t\t INCLUDE extra.inc\n'
+                '1     4\t0003  90\t\t\t nop  ; from the INCLUDEd file\n'
+                '      5\t0004  C3\t\t\t ret\n')
         with tempfile.NamedTemporaryFile('w', suffix='.lst', delete=False) as f:
             f.write(text)
         self.addCleanup(os.remove, f.name)
         listing = parse_listing(f.name)
+        # the included line is skipped and does not count as a line of the main file
         self.assertEqual([(line.number, line.offset) for line in listing.lines], [(1, 0), (2, 0), (4, 4)])
         self.assertEqual(listing.lines[1].segment, '_TEXT')
+
+    def test_numbered_continuation_lines_do_not_shift_source_lines(self):
+        # real TASM output: the bytes of line 4 overflow onto listing line 5, so the
+        # listing's numbers run one ahead of the source after it
+        with open(os.path.join(FIXTURES, 'HELLO.LST'), encoding='latin-1') as f:
+            self.assertIn('      6\t000D', f.read())  # '.code' is listing line 6 ...
+        by_number = {line.number: line for line in self.listing.lines}
+        self.assertTrue(by_number[5].source.lower().startswith('.code'))  # ... and source line 5
+
+    def test_wide_offsets_and_wrapped_source_lines(self):
+        # 8-wide offset field (32-bit capable segments) and a source line wrapped at 132 columns
+        long_comment = '; ' + 'x' * 90
+        text = ('      1\t    0000\t\t\t .code\n'
+                '      2\t    0000  B8 0001\t\t mov ax, 1 ' + long_comment[:83] + '+\n'
+                '      3\t\t\t\t\t ' + long_comment[83:] + '\n'
+                '      4\t    0003  C3\t\t\t ret\n')
+        with tempfile.NamedTemporaryFile('w', suffix='.lst', delete=False) as f:
+            f.write(text)
+        self.addCleanup(os.remove, f.name)
+        listing = parse_listing(f.name)
+        self.assertEqual([(line.number, line.offset, line.has_bytes) for line in listing.lines],
+                         [(1, 0, False), (2, 0, True), (3, 3, True)])
 
     def test_garbage_is_rejected(self):
         with tempfile.NamedTemporaryFile('w', suffix='.lst', delete=False) as f:

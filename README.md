@@ -51,7 +51,9 @@ watchpoints, and inspect the disassembly, registers, memory and text screen.
 - [DOSBox](https://www.dosbox.com/) on `PATH` (or set the `DOSBOX` environment
   variable to its executable). Only needed for building.
 - Turbo Assembler binaries. `TASM.EXE` and `TLINK.EXE` are **not** included in
-  this repository; copy them into `external/tasm/BIN/`.
+  this repository; copy them into `external/tasm/BIN/`, or set `TASM_DIR` to a
+  Turbo Assembler directory that has them in its `BIN` folder. The build is
+  tested with TASM 4.1 and TLINK 7.1.
 
 ## Usage
 
@@ -96,6 +98,11 @@ python tests/sst_runner.py            # 300 vectors per documented opcode
 python tests/sst_runner.py --all-statuses --limit 0   # every vector, incl. undocumented opcodes
 SST_TESTS=1 python -m unittest tests.test_disassembler  # disassembler vs. the vector names
 ```
+
+`tests/test_real_build.py` assembles `examples/hello.asm` with the real TASM/TLINK
+in DOSBox, runs it and follows it in the source; it is skipped when DOSBox or the
+Turbo Assembler binaries are not available. `tests/fixtures` holds real TASM 4.1 /
+TLINK 7.1 output (listing, map, executable) for the tests that do not need them.
 
 [SingleStepTests/8088](https://github.com/SingleStepTests/8088) contains test
 vectors captured from a real 8088, which has the same instruction set as the
@@ -153,6 +160,3 @@ The UI tests need PyQt5 and run offscreen (`QT_QPA_PLATFORM=offscreen`).
 - Watchpoints report the instruction that accessed the memory, after it ran;
   memory written by the emulated DOS/BIOS services counts as written by the `INT`.
 - No conditional breakpoints, hit counts or call stack view.
-- The build has not been tested against a live TASM/DOSBox installation in this
-  repository's test suite; it is exercised with a fake DOSBox and with listing and
-  map files in TASM's format.
