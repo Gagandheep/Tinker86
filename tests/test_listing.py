@@ -7,8 +7,10 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from Assembler.listing import (ListingError, SourceMap, find_companion, load_source_map,  # noqa: E402
-                               parse_listing, parse_map)
+from Assembler.listing import (ListingError, SourceMap, find_companion, is_jwasm_listing,  # noqa: E402
+                               load_source_map, parse_jwasm_listing, parse_listing, parse_map)
+from Microprocessor import Microprocessor  # noqa: E402
+from Microprocessor.dos import DOS  # noqa: E402
 
 FIXTURES = os.path.join(ROOT, 'tests', 'fixtures')
 LOAD_SEGMENT = 0x0810
@@ -108,6 +110,52 @@ class ListingTests(unittest.TestCase):
                     dst.write(src.read())
             self.assertTrue(find_companion(exe, '.lst').endswith('hello.lst'))
             self.assertEqual(load_source_map(exe, LOAD_SEGMENT).address_for_line(7), BASE + 3)
+
+
+
+class JWasmListingTests(unittest.TestCase):
+    """Listings written by JWasm (tests/fixtures/jwasm, built with jwasm -mz -Sx -Fl)."""
+
+    DIRECTORY = os.path.join(FIXTURES, 'jwasm')
+
+    def trace(self, name):
+        """Run a fixture program; return (source lines executed, output, cpu, source map)."""
+        cpu = Microprocessor()
+        printed = []
+        DOS(cpu, output=printed.append, root=self.DIRECTORY)
+        exe = os.path.join(self.DIRECTORY, name + '.EXE')
+        program = cpu.load_program(exe)
+        source_map = load_source_map(exe, program.load_segment)
+        lines = []
+        while not cpu.halted:
+            lines.append(source_map.line_for_address(cpu.physical_address(cpu.CS, cpu.IP)))
+            cpu.step()
+        return lines, ''.join(printed), cpu, source_map
+
+    def test_format_detection(self):
+        self.assertTrue(is_jwasm_listing(os.path.join(self.DIRECTORY, 'HELLO.LST')))
+        self.assertFalse(is_jwasm_listing(os.path.join(FIXTURES, 'HELLO.LST')))  # TASM
+
+    def test_hello_lines_symbols_and_segments(self):
+        listing, segments = parse_jwasm_listing(os.path.join(self.DIRECTORY, 'HELLO.LST'))
+        self.assertEqual(segments['_TEXT'], (0, 0x11, 'CODE'))
+        self.assertEqual(segments['_DATA'][2], 'DATA')
+        self.assertIn('STACK', segments)  # no file data: placed from its group's frame
+        self.assertEqual(listing.symbols['MSG'], ('_DATA', 0, 1))
+        lines, output, cpu, source_map = self.trace('HELLO')  # no .MAP file needed
+        self.assertEqual(lines, [6, 7, 8, 9, 10, 11, 12])
+        self.assertEqual((output, cpu.exit_code), ('Hello, 8086!', 7))
+        address, _ = source_map.symbol('msg')
+        self.assertEqual(bytes(cpu.memory[address:address + 5]), b'Hello')
+
+    def test_macros_includes_and_false_conditionals(self):
+        lines, output, cpu, source_map = self.trace('FEATURES')
+        self.assertEqual(output, 'AB')
+        # 16: the putc macro call (its expansion), 25: the INCLUDE (helper inside it),
+        # 21: the else branch; the false IF block keeps its line numbers (-Sx)
+        self.assertEqual(lines, [14, 15, 16, 16, 16, 17, 25, 25, 25, 25, 21, 23, 24])
+        address, size = source_map.symbol('count')
+        self.assertEqual((size, cpu.memory[address]), (2, 5))
 
 
 if __name__ == '__main__':

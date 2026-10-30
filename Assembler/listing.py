@@ -1,4 +1,8 @@
-"""Map source lines and symbols to addresses using TASM listing and TLINK map files.
+"""Map source lines and symbols to addresses using assembler listings.
+
+Two formats are understood: TASM listings with TLINK map files, and JWasm
+(or UASM) listings, which describe the segment layout of the .EXE themselves
+(see parse_jwasm_listing at the end of this module).
 
 A TASM listing (tasm /l) gives every source line's offset inside its segment
 plus the symbol table; the TLINK .MAP file gives where each segment starts
@@ -277,9 +281,146 @@ def find_companion(exe_path, extension):
 
 
 def load_source_map(exe_path, load_segment):
-    """SourceMap for an executable built by TASM/TLINK, or None if the listing or map is missing."""
+    """SourceMap for an executable built by TASM/TLINK or JWasm, or None if the listing
+    (or, for TASM, the map) is missing."""
     listing_path = find_companion(exe_path, '.lst')
+    if listing_path is None:
+        return None
+    if is_jwasm_listing(listing_path):
+        listing, segments = parse_jwasm_listing(listing_path)
+        return SourceMap(listing, segments, load_segment)
     map_path = find_companion(exe_path, '.map')
-    if listing_path is None or map_path is None:
+    if map_path is None:
         return None
     return SourceMap(parse_listing(listing_path), parse_map(map_path), load_segment)
+
+
+# ------------------------------------------------------------------- JWasm
+
+# A JWasm listing (jwasm -mz -Sx -Fl) has one line per line of the main source
+# file, without line numbers: offset in columns 0-3 (0-7 for 32-bit segments),
+# bytes up to column 27, a macro nesting level (digit) or 'C' (INCLUDEd file)
+# in columns 28-31 and the source from column 32. Macro definition lines start
+# with ' >'. -Sx makes false conditional blocks keep their (blank) lines.
+JWASM_SOURCE_COLUMN = 32
+JWASM_MARKER = slice(28, 32)
+_JWASM_SECTIONS = ('Binary Map:', 'Macros:', 'Segments and Groups:', 'Structures and Unions:', 'Records:',
+                   'Types:', 'Procedures, parameters and locals:', 'Symbols:')
+_JWASM_MESSAGE = re.compile(r'^\s*(Warning|Error)\s+A\d+:')
+_JWASM_OFFSET = re.compile(r'^([0-9A-Fa-f]{8}|[0-9A-Fa-f]{4})(?= |$)')
+_JWASM_BINARY_MAP = re.compile(r'^(\S+)\s+([0-9A-Fa-f]+)\s+([0-9A-Fa-f]+)\s+([0-9A-Fa-f]+)\s+([0-9A-Fa-f]+)\s*$')
+_JWASM_SYMBOL = re.compile(r'^(?:[LP] )?(\w+)(?:\[\d+\])?\s+([0-9A-Fa-f]+)h?\s+(\w+)')
+
+
+def is_jwasm_listing(path):
+    with open(path, encoding='latin-1') as f:
+        first = f.readline()
+    return first.startswith(('JWasm', 'UASM'))
+
+
+def parse_jwasm_listing(path):
+    """(Listing, segments) from a JWasm listing; segments maps a segment name to
+    (start offset in the .EXE image, size, class) like parse_map does for TASM."""
+    with open(path, encoding='latin-1') as f:
+        raw_lines = f.read().splitlines()
+    end = next((i for i, line in enumerate(raw_lines) if line.strip() in _JWASM_SECTIONS), len(raw_lines))
+    segments, symbols, code_segment = _parse_jwasm_tables(raw_lines[end:])
+    lines = []
+    number = 0
+    segment = None
+    invoker = None  # the last main-file line without code of its own (a macro call, INCLUDE)
+    for raw in raw_lines[2:end]:  # the first two lines are the banner and the file name
+        expanded = raw.expandtabs(8).rstrip()
+        if _JWASM_MESSAGE.match(expanded):
+            continue
+        if not expanded.startswith(' >') and expanded[JWASM_MARKER].strip():
+            # macro expansion or a line of an INCLUDEd file: its first code belongs
+            # to the line that expanded or included it
+            offset = _JWASM_OFFSET.match(expanded)
+            if invoker is not None and offset and expanded[offset.end():JWASM_MARKER.start].strip():
+                lines.append(ListingLine(invoker, segment, int(offset.group(1), 16), True, ''))
+                invoker = None
+            continue
+        number += 1
+        invoker = None
+        source = expanded[JWASM_SOURCE_COLUMN:]
+        code = _strip_comment(source)
+        line_segment = segment
+        simplified = _SIMPLIFIED.match(code)
+        explicit = _SEGMENT.match(code)
+        if simplified:
+            directive = simplified.group(1).lower()
+            segment = line_segment = code_segment if directive == '.code' else SIMPLIFIED_SEGMENTS[directive]
+        elif explicit and explicit.group(1):
+            if explicit.group(2).lower() == 'segment':
+                segment = line_segment = explicit.group(1).upper()
+            else:
+                segment = None
+        offset = _JWASM_OFFSET.match(expanded)
+        if offset is None:
+            if code.strip() and not expanded.startswith(' >'):
+                invoker = number
+            continue
+        has_bytes = bool(expanded[offset.end():JWASM_MARKER.start].strip())
+        lines.append(ListingLine(number, line_segment, int(offset.group(1), 16), has_bytes, source.strip()))
+    if not lines:
+        raise ListingError(f'{path}: no source lines with offsets found')
+    return Listing(lines, symbols, {}, code_segment), segments
+
+
+def _parse_jwasm_tables(raw_lines):
+    binary_map, classes, group_of = {}, {}, {}
+    symbols = {}
+    code_segment = '_TEXT'
+    header = 0
+    section = None
+    group = None
+    for raw in raw_lines:
+        line = raw.expandtabs(8).rstrip()
+        if line.strip() in _JWASM_SECTIONS:
+            section = line.strip()
+            group = None
+            continue
+        if not line.strip() or line.startswith(('-', 'Segment ', '                N a m e')):
+            continue
+        if section == 'Binary Map:':
+            match = _JWASM_BINARY_MAP.match(line)
+            if match:
+                name, position, rva, file_size, memory_size = match.groups()
+                if name == '<header>':
+                    header = int(file_size, 16)
+                else:
+                    binary_map[name.upper()] = (int(position, 16), int(rva, 16), int(file_size, 16),
+                                                int(memory_size, 16))
+            continue
+        name = line.split()[0]
+        rest = line[len(name):].lstrip(' .')
+        if section == 'Segments and Groups:':
+            if rest.startswith('GROUP'):
+                group = name.upper()
+            else:
+                classes[name.upper()] = rest.split()[-1].strip("'").upper() if rest.split() else ''
+                if group is not None:
+                    group_of[name.upper()] = group  # members are listed after their group
+        elif section in ('Symbols:', 'Procedures, parameters and locals:'):
+            if name.upper() == '@CODE' and rest.startswith('Text'):
+                code_segment = rest.split()[-1].upper()
+            match = _JWASM_SYMBOL.match(rest)
+            if match:
+                kind, value, segment = match.groups()
+                if kind.lower() not in ('number', 'text', 'func'):
+                    symbols[name.upper()] = (segment.upper(), int(value, 16), SYMBOL_SIZES.get(kind.lower(), 1))
+    # image offsets: from the file position, or for segments without file data
+    # (e.g. the stack) from their group's frame
+    starts, frames = {}, {}
+    for name, (position, rva, file_size, _) in binary_map.items():
+        if file_size:
+            starts[name] = position - header
+            if name in group_of:
+                frames[group_of[name]] = starts[name] - rva
+    for name, (_, rva, file_size, _) in binary_map.items():
+        if name not in starts and group_of.get(name) in frames:
+            starts[name] = frames[group_of[name]] + rva
+    segments = {name: (starts[name], binary_map[name][3], classes.get(name, ''))
+                for name in binary_map if name in starts}
+    return segments, symbols, code_segment

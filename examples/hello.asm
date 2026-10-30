@@ -1,5 +1,5 @@
 ; Prints a greeting and its length, then exits with code 0.
-; Build with F7 in the emulator (TASM + TLINK in DOSBox), debug with F8;
+; Build with F7 in the emulator (JWasm, or TASM + TLINK in DOSBox), debug with F8;
 ; the output appears in the Screen view.
         .model small
         .stack 100h

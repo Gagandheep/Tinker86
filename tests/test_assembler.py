@@ -106,5 +106,46 @@ class AssemblerTests(unittest.TestCase):
         self.assertEqual(Assembler.split_source('/tmp/data.asm'), ('/tmp', 'data'))
 
 
+    def test_choose_assembler(self):
+        self.env('FAKE_LOG', TASM_OK)
+        self.assertEqual(Assembler.choose_assembler('tasm'), 'tasm')
+        self.env('JWASM', os.path.join(self.workdir.name, 'no-such-jwasm'))
+        self.assertEqual(Assembler.choose_assembler('auto'), 'tasm')  # TASM preferred when installed
+        os.remove(os.path.join(Assembler.TASM_BIN, 'TLINK.EXE'))
+        self.assertEqual(Assembler.choose_assembler('auto'), 'jwasm')  # JWASM is set (exists or not)
+        with self.assertRaises(Assembler.AssemblerError):
+            Assembler.choose_assembler('masm')
+
+    def test_jwasm_backend_with_fake_executable(self):
+        fake = os.path.join(self.workdir.name, 'fake-jwasm')
+        with open(fake, 'w') as f:
+            f.write(FAKE_JWASM.format(python=sys.executable))
+        os.chmod(fake, os.stat(fake).st_mode | stat.S_IEXEC)
+        self.env('JWASM', fake)
+        self.env('FAKE_FAIL', '')
+        success, log, exe, used = Assembler.build(self.source, 'jwasm')
+        self.assertEqual((success, used, os.path.basename(exe)), (True, 'jwasm', 'hello.EXE'))
+        self.assertIn('-mz', log)
+        self.env('FAKE_FAIL', '1')
+        success, log, exe, _ = Assembler.build(self.source, 'jwasm')
+        self.assertEqual((success, exe), (False, None))
+        self.assertIn('Error A2209', log)
+
+
+FAKE_JWASM = textwrap.dedent('''\
+    #!{python}
+    # Stands in for JWasm: echoes its arguments, writes -Fo/-Fl files unless FAKE_FAIL is set.
+    import os, sys
+    args = sys.argv[1:]
+    print(' '.join(args))
+    if os.environ.get('FAKE_FAIL'):
+        print(args[-1] + '(4) : Error A2209: Syntax error: badop')
+        sys.exit(1)
+    for a in args:
+        if a.startswith(('-Fo=', '-Fl=')):
+            open(a[4:], 'wb').write(b'MZ')
+''')
+
+
 if __name__ == '__main__':
     unittest.main()
