@@ -10,6 +10,7 @@ from Microprocessor.bios import (BIOS_DATA_SEGMENT, COLUMNS, CURSOR_POSITION, RO
 from Microprocessor.disassembler import data_byte, disassemble_memory
 from Microprocessor.dos import DOS, DOSServiceNotImplemented
 from Microprocessor.program import ProgramFormatError
+from Microprocessor.watchpoints import MODES, AddressError, WatchList, Watchpoint, format_value, parse_address
 from UI.files import File
 
 SEGMENT_SIZE = 0x10000
@@ -53,9 +54,10 @@ class MemoryDelegate(QtWidgets.QStyledItemDelegate):
 class MemoryModel(QtCore.QAbstractTableModel):
     """One 64 KB segment of the CPU's memory, 16 bytes per row, read on demand."""
 
-    def __init__(self, microprocessor, parent=None):
+    def __init__(self, microprocessor, watches=None, parent=None):
         super(MemoryModel, self).__init__(parent)
         self.microprocessor = microprocessor
+        self.watches = watches
         self.segment = 0
         self.highlight = None  # physical address of the next instruction
 
@@ -94,8 +96,12 @@ class MemoryModel(QtCore.QAbstractTableModel):
             return None
         if role in (Qt.DisplayRole, Qt.EditRole):
             return '{:02X}'.format(self.microprocessor.memory[self.address(index)])
-        if role == Qt.BackgroundRole and self.address(index) == self.highlight:
-            return QtGui.QBrush(QtGui.QColor(255, 210, 90))
+        if role == Qt.BackgroundRole:
+            address = self.address(index)
+            if address == self.highlight:
+                return QtGui.QBrush(QtGui.QColor(255, 210, 90))
+            if self.watches is not None and address in self.watches.watched:
+                return QtGui.QBrush(QtGui.QColor(180, 215, 255))
         if role == Qt.TextAlignmentRole:
             return Qt.AlignCenter
         return None
@@ -312,6 +318,32 @@ class DisassemblyModel(QtCore.QAbstractTableModel):
         return None
 
 
+class WatchpointDialog(QtWidgets.QDialog):
+    """Asks for an address expression, size and when to stop."""
+
+    def __init__(self, parent, expression='', size=0, mode='write'):
+        super(WatchpointDialog, self).__init__(parent)
+        self.setWindowTitle('Add Watchpoint')
+        layout = QtWidgets.QFormLayout(self)
+        self.expression = QtWidgets.QLineEdit(expression, self)
+        self.expression.setPlaceholderText('symbol, DS:0010, ES:DI+2, 12345 ...')
+        layout.addRow('Address:', self.expression)
+        self.size = QtWidgets.QSpinBox(self)
+        self.size.setRange(0, 16)
+        self.size.setSpecialValueText('auto')
+        self.size.setValue(size)
+        layout.addRow('Bytes:', self.size)
+        self.mode = QtWidgets.QComboBox(self)
+        self.mode.addItems(MODES)
+        self.mode.setCurrentText(mode)
+        layout.addRow('Stop on:', self.mode)
+        layout.addRow(QtWidgets.QLabel('Numbers are hexadecimal. "auto" uses the symbol\'s size, else 2 bytes.'))
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addRow(buttons)
+
+
 # noinspection PyAttributeOutsideInit,PyPep8Naming
 class UI_MainWindow:
     debugMode = False
@@ -328,6 +360,8 @@ class UI_MainWindow:
         self.runTimer = None
         self.program = None
         self.breakpoints = set()  # physical addresses
+        self.watches = WatchList(microprocessor)
+        self.sourceMap = None  # Assembler.listing.SourceMap of the program being debugged
         self.temporaryBreakpoint = None  # used by Run to Cursor
 
     def setupUI(self, MainWindow):
@@ -380,6 +414,7 @@ class UI_MainWindow:
         self.setupDockWidgetSegmentViews(MainWindow)
         self.setupDockWidgetDisassembly(MainWindow)
         self.setupDockWidgetScreen(MainWindow)
+        self.setupDockWidgetWatch(MainWindow)
 
     def setupDockWidgetOutput(self, MainWindow):
         self.dockOutput = QtWidgets.QDockWidget(MainWindow)
@@ -464,7 +499,7 @@ class UI_MainWindow:
             combobox.setCurrentIndex(i % combobox.count())
             self.tableComboBoxes.append(combobox)
             gridLayoutDockSegmentView.addWidget(combobox, 0, 1, 1, 1)
-            model = MemoryModel(self.microprocessor, dockSegmentViewContents)
+            model = MemoryModel(self.microprocessor, self.watches, dockSegmentViewContents)
             self.memoryModels.append(model)
             tableMemory = QtWidgets.QTableView(dockSegmentViewContents)
             tableMemory.setModel(model)
@@ -472,6 +507,9 @@ class UI_MainWindow:
             tableMemory.setFont(QtGui.QFont('monospace', 9))
             tableMemory.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
             tableMemory.verticalHeader().setDefaultSectionSize(20)
+            tableMemory.setContextMenuPolicy(Qt.CustomContextMenu)
+            tableMemory.customContextMenuRequested.connect(
+                lambda position, view=i: self.memoryContextMenu(view, position))
             self.tableMemories.append(tableMemory)
             combobox.currentTextChanged.connect(lambda text, view=i: self.showSegment(view))
             gridLayoutDockSegmentView.addWidget(tableMemory, 1, 0, 1, 2)
@@ -520,6 +558,116 @@ class UI_MainWindow:
         MainWindow.addDockWidget(QtCore.Qt.BottomDockWidgetArea, self.dockScreen)
         MainWindow.tabifyDockWidget(self.dockOutput, self.dockScreen)
         self.dockScreen.setVisible(False)
+
+    def setupDockWidgetWatch(self, MainWindow):
+        self.dockWatch = QtWidgets.QDockWidget(MainWindow)
+        self.dockWatch.setObjectName('dockWatch')
+        self.dockWatch.setWindowTitle('Watch')
+        self.dockWatch.setAllowedAreas(QtCore.Qt.AllDockWidgetAreas)
+        contents = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(contents)
+        layout.setContentsMargins(4, 4, 4, 4)
+        self.tableWatch = QtWidgets.QTableWidget(0, 5, contents)
+        self.tableWatch.setHorizontalHeaderLabels(['Expression', 'Address', 'Bytes', 'Stop on', 'Value'])
+        self.tableWatch.verticalHeader().setVisible(False)
+        self.tableWatch.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.tableWatch.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.tableWatch.horizontalHeader().setStretchLastSection(True)
+        self.tableWatch.setFont(QtGui.QFont('monospace', 9))
+        layout.addWidget(self.tableWatch)
+        buttons = QtWidgets.QHBoxLayout()
+        add = QtWidgets.QPushButton('Add...', contents)
+        add.clicked.connect(lambda: self.addWatchpoint())
+        remove = QtWidgets.QPushButton('Remove', contents)
+        remove.clicked.connect(self.removeWatchpoint)
+        buttons.addWidget(add)
+        buttons.addWidget(remove)
+        buttons.addStretch()
+        layout.addLayout(buttons)
+        self.dockWatch.setWidget(contents)
+        MainWindow.addDockWidget(QtCore.Qt.LeftDockWidgetArea, self.dockWatch)
+        self.dockWatch.setVisible(False)
+
+    def symbolLookup(self, name):
+        return self.sourceMap.symbol(name) if self.sourceMap is not None else None
+
+    def addWatchpointFromText(self, expression, size=0, mode='write'):
+        """Add a watchpoint; size 0 means the symbol's size (else 2). Raises AddressError."""
+        address, hint = parse_address(expression, self.microprocessor, self.symbolLookup)
+        watchpoint = self.watches.add(Watchpoint(expression, address, size or hint or 2, mode))
+        self.refreshWatchTable()
+        self.dockWatch.setVisible(True)
+        return watchpoint
+
+    def addWatchpoint(self, expression='', size=0, mode='write'):
+        dialog = WatchpointDialog(self.mainWidget, expression, size, mode)
+        while dialog.exec_() == QtWidgets.QDialog.Accepted:
+            try:
+                return self.addWatchpointFromText(dialog.expression.text(), dialog.size.value(),
+                                                  dialog.mode.currentText())
+            except AddressError as e:
+                QtWidgets.QMessageBox.warning(self.mainWidget, 'Add Watchpoint', str(e))
+        return None
+
+    def removeWatchpoint(self):
+        rows = sorted({index.row() for index in self.tableWatch.selectedIndexes()}, reverse=True)
+        for row in rows:
+            self.watches.remove(row)
+        self.refreshWatchTable()
+
+    def setWatchMode(self, row, mode):
+        self.watches.items[row].mode = mode
+        self.watches.changed()
+        self.refreshMemoryViews()
+
+    def refreshWatchTable(self):
+        """Rebuild the Watch table (rows, mode selectors) and repaint watched memory."""
+        self.tableWatch.setRowCount(len(self.watches.items))
+        for row, watchpoint in enumerate(self.watches.items):
+            self.tableWatch.setItem(row, 0, QtWidgets.QTableWidgetItem(watchpoint.expression))
+            self.tableWatch.setItem(row, 1, QtWidgets.QTableWidgetItem(f'{watchpoint.address:05X}'))
+            self.tableWatch.setItem(row, 2, QtWidgets.QTableWidgetItem(str(watchpoint.size)))
+            combo = QtWidgets.QComboBox()
+            combo.addItems(MODES)
+            combo.setCurrentText(watchpoint.mode)
+            combo.currentTextChanged.connect(lambda mode, r=row: self.setWatchMode(r, mode))
+            self.tableWatch.setCellWidget(row, 3, combo)
+            self.tableWatch.setItem(row, 4, QtWidgets.QTableWidgetItem())
+        self.refreshWatchValues()
+        self.refreshMemoryViews()
+
+    def refreshWatchValues(self):
+        for row, watchpoint in enumerate(self.watches.items):
+            item = self.tableWatch.item(row, 4)
+            if item is not None:
+                item.setText(format_value(watchpoint.value(self.microprocessor.memory)))
+
+    def refreshMemoryViews(self):
+        for model in self.memoryModels:
+            model.setSegment(model.segment)
+
+    def memoryContextMenu(self, view, position):
+        index = self.tableMemories[view].indexAt(position)
+        if not index.isValid():
+            return
+        model = self.memoryModels[view]
+        offset = index.row() * 16 + index.column()
+        expression = f'{model.segment:04X}:{offset:04X}'
+        menu = QtWidgets.QMenu(self.tableMemories[view])
+        byte = menu.addAction(f'Watch byte at {expression}')
+        word = menu.addAction(f'Watch word at {expression}')
+        other = menu.addAction('Add Watchpoint...')
+        chosen = menu.exec_(self.tableMemories[view].viewport().mapToGlobal(position))
+        if chosen in (byte, word):
+            self.addWatchpointFromText(expression, 1 if chosen is byte else 2)
+        elif chosen is other:
+            self.addWatchpoint(expression)
+
+    def reportWatchHits(self, hits, cs, ip):
+        for hit in hits:
+            watchpoint = hit.watchpoint
+            self.log(f'\nWatchpoint {watchpoint.expression} [{watchpoint.address:05X}] {hit.kind} by the '
+                     f'instruction at {cs:04X}:{ip:04X}: {format_value(hit.old)} -> {format_value(hit.new)}\n')
 
     def keyTyped(self):
         if self.resumeOnInput and self.debugMode:
@@ -647,6 +795,7 @@ class UI_MainWindow:
         self.actionToggleBreakpoint = action('media-record', 'Toggle Breakpoint', self.toggleBreakpoint, 'F9')
         self.actionClearBreakpoints = action('edit-clear', 'Clear Breakpoints', self.clearBreakpoints)
         self.actionRunToCursor = action('go-jump', 'Run to Cursor', self.runToCursor, 'F4')
+        self.actionAddWatchpoint = action('list-add', 'Add Watchpoint...', lambda: self.addWatchpoint(), 'Ctrl+Shift+W')
         self.actionAbout = action('help-about', '&About', self.about)
 
         self.actionDebug.setEnabled(False)
@@ -655,7 +804,8 @@ class UI_MainWindow:
 
     def debugActions(self):
         return (self.actionStep, self.actionRun, self.actionStop, self.actionRunToCursor,
-                self.actionToggleBreakpoint, self.actionClearBreakpoints, self.actionExitDebug)
+                self.actionToggleBreakpoint, self.actionClearBreakpoints, self.actionAddWatchpoint,
+                self.actionExitDebug)
 
     def setupMenuBar(self, MainWindow):
         self.menubar = QtWidgets.QMenuBar(MainWindow)
@@ -681,6 +831,7 @@ class UI_MainWindow:
         self.menuView.addAction(self.dockRegisterView.toggleViewAction())
         self.menuView.addAction(self.dockDisassembly.toggleViewAction())
         self.menuView.addAction(self.dockScreen.toggleViewAction())
+        self.menuView.addAction(self.dockWatch.toggleViewAction())
         for dockSegmentView in self.dockWidgetSegmentViews:
             self.menuView.addAction(dockSegmentView.toggleViewAction())
 
@@ -867,6 +1018,7 @@ class UI_MainWindow:
         self.dockRegisterView.setVisible(enabled)
         self.dockDisassembly.setVisible(enabled)
         self.dockScreen.setVisible(enabled)
+        self.dockWatch.setVisible(enabled)
         if enabled:
             self.mainWindow.resizeDocks([self.dockDisassembly], [480], Qt.Horizontal)
         for dockSegmentView in self.dockWidgetSegmentViews:
@@ -903,11 +1055,23 @@ class UI_MainWindow:
         self.dockScreen.raise_()
         self.log(f'Loaded {os.path.basename(file.exe)} ({program.kind}, {program.size} bytes) at '
                  f'{self.microprocessor.CS:04X}:{self.microprocessor.IP:04X}; drive C: is {self.dos.files.root}\n')
+        self.reresolveWatchpoints()
         self.microprocessor.debug()
         self.disassemblyModel.dirty = True
         self.refreshDisassembly()
         self.updateHighlight()
         self.setRunControls()
+
+    def reresolveWatchpoints(self):
+        """After loading, recompute addresses (symbols and segment registers may have moved)."""
+        for watchpoint in self.watches.items:
+            try:
+                watchpoint.address, _ = parse_address(watchpoint.expression, self.microprocessor, self.symbolLookup)
+            except AddressError:
+                pass  # keep the old address
+            watchpoint.last = watchpoint.value(self.microprocessor.memory)
+        self.watches.changed()
+        self.refreshWatchTable()
 
     def executeSteps(self, count, useBreakpoints=False):
         """Run up to count instructions; reports errors, breakpoints and program exit.
@@ -917,9 +1081,15 @@ class UI_MainWindow:
             for i in range(count):
                 if cpu.halted:
                     break
+                cs, ip = cpu.CS, cpu.IP
                 cpu.step()
                 if cpu.waiting_for_input:
                     return False
+                if self.watches.items:
+                    hits = self.watches.check()
+                    if hits:
+                        self.reportWatchHits(hits, cs, ip)
+                        return False
                 if useBreakpoints:
                     here = cpu.physical_address(cpu.CS, cpu.IP)
                     if here == self.temporaryBreakpoint:
@@ -944,6 +1114,7 @@ class UI_MainWindow:
             return
         self.executeSteps(1)
         self.refreshDisassembly()
+        self.refreshWatchValues()
         self.updateHighlight()
         self.setRunControls()
 
@@ -971,6 +1142,7 @@ class UI_MainWindow:
             self.microprocessor.notify_all()
         self.temporaryBreakpoint = None
         self.refreshDisassembly()
+        self.refreshWatchValues()
         self.updateHighlight()
         self.setRunControls()
 

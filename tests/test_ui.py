@@ -131,6 +131,43 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(model.rows[1].offset, 1)
         self.assertEqual(model.current, 1)
 
+    def test_watchpoint_stops_run_and_reports_change(self):
+        # mov ax,2 ; mov ds,ax ; mov byte ptr [3], 41h ; mov byte ptr [3], 42h ; mov ax,4C00h ; int 21h
+        code = bytes([0xB8, 0x02, 0x00, 0x8E, 0xD8, 0xC6, 0x06, 0x03, 0x00, 0x41,
+                      0xC6, 0x06, 0x03, 0x00, 0x42, 0xB8, 0x00, 0x4C, 0xCD, 0x21]).ljust(32, b'\x90')
+        self.load_exe(code + bytes(16), relocations=[(1, 0)], ss=3, sp=0x80)
+        cpu = self.window.microprocessor
+        self.ui.step()
+        self.ui.step()  # DS now points at the data paragraph
+        watchpoint = self.ui.addWatchpointFromText('DS:3', 1, 'write')
+        self.assertEqual(watchpoint.address, cpu.physical_address(cpu.DS, 3))
+        self.assertEqual(self.ui.tableWatch.rowCount(), 1)
+        model = self.ui.memoryModels[1]  # the Data view shows DS
+        self.assertIsNotNone(model.data(model.index(0, 3), QtCore.Qt.BackgroundRole))
+        self.ui.run()
+        self.run_until_stopped()
+        log = self.ui.textOutput.toPlainText()
+        self.assertIn('Watchpoint DS:3', log)
+        self.assertIn('written by the instruction at', log)
+        self.assertIn('00 -> 41', log)
+        self.assertEqual(self.ui.tableWatch.item(0, 4).text(), '41')
+        self.assertEqual(cpu.IP, 10)  # stopped right after the writing instruction
+        self.ui.run()
+        self.run_until_stopped()
+        self.assertIn('41 -> 42', self.ui.textOutput.toPlainText())
+        self.ui.tableWatch.cellWidget(0, 3).setCurrentText('never')  # display only from now on
+        self.ui.run()
+        self.run_until_stopped()
+        self.assertTrue(cpu.halted)
+        self.ui.tableWatch.selectRow(0)
+        self.ui.removeWatchpoint()
+        self.assertEqual(self.ui.watches.items, [])
+
+    def test_bad_watch_expression(self):
+        self.load_hello()
+        with self.assertRaises(Exception):
+            self.ui.addWatchpointFromText('nonsense:zz')
+
     def test_edit_register_and_memory(self):
         self.load_hello()
         cpu = self.window.microprocessor

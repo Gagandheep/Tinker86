@@ -24,6 +24,7 @@ class DOSFiles(unittest.TestCase):
         self.cpu.SS, self.cpu.SP = 0x3000, 0x100
         self.printed = []
         self.dos = DOS(self.cpu, output=self.printed.append, root=self.root)
+        self.addCleanup(self.dos.files.close_all)
 
     def string(self, offset, text):
         for i, byte in enumerate(text.encode('latin-1') + b'\0'):

@@ -116,6 +116,7 @@ class Microprocessor:
         self._seg_override = None
         self._rep = None
         self._dirty = []
+        self._reads = []
 
     # ------------------------------------------------------------------ registers
 
@@ -171,12 +172,29 @@ class Microprocessor:
 
     # --------------------------------------------------------------------- memory
 
+    # When track_reads is set, data reads (not instruction fetches) of each step
+    # are recorded in last_reads; writes are always recorded in last_writes.
+    track_reads = False
+
+    @property
+    def last_writes(self):
+        """Physical addresses written by the last step."""
+        return self._dirty
+
+    @property
+    def last_reads(self):
+        """Physical addresses read by the last step (only while track_reads is set)."""
+        return self._reads
+
     @staticmethod
     def physical_address(segment, offset):
         return ((segment << 4) + (offset & 0xFFFF)) & ADDRESS_MASK
 
     def read8(self, segment, offset):
-        return self.memory[self.physical_address(segment, offset)]
+        address = self.physical_address(segment, offset)
+        if self.track_reads:
+            self._reads.append(address)
+        return self.memory[address]
 
     def read16(self, segment, offset):
         # the second byte wraps around inside the segment
@@ -243,6 +261,7 @@ class Microprocessor:
         self._seg_override = None
         self._rep = None
         self._dirty = []
+        self._reads = []
         self._fetched = 0
         trap = self.flags & TF
 
@@ -298,7 +317,7 @@ class Microprocessor:
         raise InstructionNotImplemented(op_code)
 
     def fetch8(self):
-        value = self.read8(self.sregs[CS], self.ip)
+        value = self.memory[self.physical_address(self.sregs[CS], self.ip)]
         self.ip = (self.ip + 1) & 0xFFFF
         self._fetched += 1
         return value
