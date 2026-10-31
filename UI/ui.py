@@ -459,6 +459,9 @@ class WatchpointDialog(QtWidgets.QDialog):
 class UI_MainWindow:
     debugMode = False
     SEGMENT_VIEWS_COUNT = 4
+    SOURCE_MIN_WIDTH = 360  # the editor never gets narrower than this in debug mode
+    DEBUG_WINDOW_WIDTH = 1280  # a smaller window grows to this (screen permitting) when debugging
+    DEBUG_WINDOW_HEIGHT = 800
 
     def __init__(self, microprocessor):
         self.files = {}
@@ -478,7 +481,7 @@ class UI_MainWindow:
 
     def setupUI(self, MainWindow):
         MainWindow.setObjectName("MainWindow")
-        MainWindow.resize(900, 700)
+        MainWindow.resize(self.fitToScreen(MainWindow, 1280, 800))
         MainWindow.setDocumentMode(True)
         self.mainWindow = MainWindow
 
@@ -517,6 +520,8 @@ class UI_MainWindow:
         self.tabbedFilesWidget.setMovable(True)
         self.tabbedFilesWidget.currentChanged.connect(self.tabUpdate)
         self.tabbedFilesWidget.tabCloseRequested.connect(self.closeTab)
+        # keep the source readable when the debugger docks open around it
+        self.tabbedFilesWidget.setMinimumWidth(self.SOURCE_MIN_WIDTH)
         self.gridLayoutTabbedFilesWidget = QtWidgets.QGridLayout(self.mainWidget)
         self.gridLayoutTabbedFilesWidget.addWidget(self.tabbedFilesWidget, 0, 1, 1, 1)
 
@@ -1202,7 +1207,7 @@ class UI_MainWindow:
         self.dockScreen.setVisible(enabled)
         self.dockWatch.setVisible(enabled)
         if enabled:
-            self.mainWindow.resizeDocks([self.dockDisassembly], [480], Qt.Horizontal)
+            self.makeRoomForDebugger()
             # leave room for the source: the bottom docks (log, screen, memory) scroll
             self.mainWindow.resizeDocks([self.dockOutput], [max(220, self.mainWindow.height() // 3)], Qt.Vertical)
         for dockSegmentView in self.dockWidgetSegmentViews:
@@ -1210,6 +1215,34 @@ class UI_MainWindow:
         for tab in self.files:
             tab.findChild(QtWidgets.QPlainTextEdit).setReadOnly(enabled)
         self.setRunControls()
+
+    @staticmethod
+    def fitToScreen(window, width, height):
+        """The size (width, height), shrunk to fit the screen the window is on."""
+        screen = window.screen() if hasattr(window, 'screen') else None
+        screen = screen or QtWidgets.QApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            width = min(width, available.width())
+            height = min(height, available.height())
+        return QtCore.QSize(width, height)
+
+    def makeRoomForDebugger(self):
+        """Share the width between the source and the debugger docks.
+
+        A small window is enlarged (within the screen) first, so the source,
+        the registers/watch column and the disassembly all fit side by side.
+        """
+        window = self.mainWindow
+        if not (window.isMaximized() or window.isFullScreen()):
+            target = self.fitToScreen(window, max(window.width(), self.DEBUG_WINDOW_WIDTH),
+                                      max(window.height(), self.DEBUG_WINDOW_HEIGHT))
+            if target != window.size():
+                window.resize(target)
+        width = window.width()
+        left = max(200, width * 22 // 100)
+        right = max(260, min(480, width * 30 // 100))
+        window.resizeDocks([self.dockRegisterView, self.dockDisassembly], [left, right], Qt.Horizontal)
 
     def setRunControls(self):
         running, halted = self.isRunning(), self.microprocessor.halted

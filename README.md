@@ -105,7 +105,7 @@ print(dos.bios.screen_text())
 
 ```sh
 python -m unittest discover tests     # unit, loader, assembler and UI tests
-tests/fetch_sst.sh                    # download the SingleStepTests 8088 suite once (~800 MB)
+tests/fetch_sst.sh                    # download the SingleStepTests 8088 suite once (~1.5 GB on disk)
 python tests/sst_runner.py            # 300 vectors per documented opcode
 python tests/sst_runner.py --all-statuses --limit 0   # every vector, incl. undocumented opcodes
 SST_TESTS=1 python -m unittest tests.test_disassembler  # disassembler vs. the vector names

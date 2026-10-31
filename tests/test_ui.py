@@ -280,6 +280,16 @@ class MainWindowTests(unittest.TestCase):
         self.assertTrue(self.ui.closeAllTabs())
         self.assertEqual(self.ui.files, {})
 
+    def test_debugger_leaves_room_for_the_source(self):
+        self.window.show()
+        self.window.resize(900, 700)  # the old default size, where the editor was squeezed to ~100px
+        self.load_hello()
+        for _ in range(5):
+            self.app.processEvents()
+        self.assertGreaterEqual(self.ui.tabbedFilesWidget.width(), self.ui.SOURCE_MIN_WIDTH)
+        self.assertTrue(self.ui.dockDisassembly.isVisible())
+        self.assertGreater(self.ui.dockDisassembly.width(), 0)
+
     def test_build_reports_missing_toolchain(self):
         path = os.path.join(self.tmp.name, 'hello.asm')
         with open(path, 'w') as f:
