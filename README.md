@@ -55,7 +55,8 @@ and choose Open the first time; on Windows, SmartScreen may ask you to confirm.
 
 To package the app yourself: `pip install pyinstaller -r requirements.txt`,
 `tools/build_jwasm.sh`, then `python tools/package.py --test`. Pushing a tag
-such as `v1.0.0` makes the Release workflow build, test and publish all of them.
+such as `v1.0.0`, or running the Release workflow from the Actions tab with a
+tag, makes it build, test and publish all of them.
 
 ## Requirements (running from source)
 
