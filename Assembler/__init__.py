@@ -20,8 +20,22 @@ import sys
 import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# TASM_DIR may point at another Turbo Assembler installation (it needs BIN\TASM.EXE)
-TASM_DIR = os.environ.get('TASM_DIR') or os.path.join(ROOT, 'external', 'tasm')
+
+
+def app_directory():
+    """The folder the portable (PyInstaller) build was unpacked to, or None from source."""
+    if not getattr(sys, 'frozen', False):
+        return None
+    directory = os.path.dirname(os.path.abspath(sys.executable))
+    if directory.endswith(os.path.join('.app', 'Contents', 'MacOS')):  # macOS app bundle
+        directory = os.path.dirname(os.path.dirname(os.path.dirname(directory)))
+    return directory
+
+
+# TASM_DIR may point at another Turbo Assembler installation (it needs BIN\TASM.EXE).
+# The portable build does not include TASM; it looks for it in a "tasm" folder next to the app.
+TASM_DIR = os.environ.get('TASM_DIR') or (os.path.join(app_directory(), 'tasm') if app_directory()
+                                          else os.path.join(ROOT, 'external', 'tasm'))
 TASM_BIN = os.path.join(TASM_DIR, 'BIN')
 DOSBOX_CONFIG = os.path.join(TASM_BIN, 'dosbox.conf')
 LOG_NAME = 'BUILD.LOG'

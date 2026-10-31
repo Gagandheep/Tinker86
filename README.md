@@ -45,7 +45,19 @@ watchpoints, and inspect the disassembly, registers, memory and text screen.
     the program. When a program waits for a key, Run pauses and resumes as
     soon as you type.
 
-## Requirements
+## Download
+
+Portable builds for Windows, macOS (Apple silicon and Intel) and Linux are on
+the [Releases page](https://github.com/Gagandheep/8086-Simulator/releases).
+Unpack the archive and run the app inside; nothing needs to be installed and
+JWasm is included. The apps are not code-signed: on macOS, right-click the app
+and choose Open the first time; on Windows, SmartScreen may ask you to confirm.
+
+To package the app yourself: `pip install pyinstaller -r requirements.txt`,
+`tools/build_jwasm.sh`, then `python tools/package.py --test`. Pushing a tag
+such as `v1.0.0` makes the Release workflow build, test and publish all of them.
+
+## Requirements (running from source)
 
 - Python 3.8+
 - PyQt5: `pip install -r requirements.txt`
@@ -140,6 +152,8 @@ The UI tests need PyQt5 and run offscreen (`QT_QPA_PLATFORM=offscreen`).
 | `Assembler/__init__.py` | Building with JWasm, or TASM/TLINK in DOSBox |
 | `Assembler/listing.py` | Listing (TASM, JWasm) and map parsing for the source view |
 | `tools/build_jwasm.sh` | Downloads and builds JWasm into `external/jwasm/` |
+| `tools/package.py` | Builds and self-tests the portable app (PyInstaller) |
+| `.github/workflows/release.yml` | Builds, tests and publishes the portable apps for a `v*` tag |
 | `UI/` | PyQt5 main window |
 | `tests/` | Unit tests and the SingleStepTests runner |
 | `external/tasm/` | Turbo Assembler support files and DOSBox config |

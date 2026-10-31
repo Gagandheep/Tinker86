@@ -12,3 +12,5 @@ tests/data
 .DS_Store
 !examples/*.asm
 external/jwasm/
+build/
+dist/
