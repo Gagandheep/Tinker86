@@ -1398,7 +1398,9 @@ class UI_MainWindow:
 
     def about(self):
         QtWidgets.QMessageBox.about(self.mainWidget, '8086 Emulator',
-                                    'Edit, assemble (TASM in DOSBox) and step through 8086 programs.')
+                                    'Edit, assemble (JWasm, or TASM in DOSBox) and debug 8086 programs.\n\n'
+                                    'User guide: docs/USER_GUIDE.pdf\n'
+                                    'https://github.com/Gagandheep/8086-Simulator')
 
     @staticmethod
     def dialogUnsavedWarning(name):

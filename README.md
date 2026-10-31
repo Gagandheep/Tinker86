@@ -1,200 +1,171 @@
 # 8086 Simulator
 
-A desktop IDE for writing, assembling and debugging Intel 8086 programs.
-Programs are assembled with JWasm (open source, runs natively) or with Turbo
-Assembler (TASM/TLINK) inside DOSBox, then loaded into a Python emulation of an
-8086 PC where you can run or step
-through them, follow execution in the source, set breakpoints and data
-watchpoints, and inspect the disassembly, registers, memory and text screen.
+A desktop IDE for writing, assembling and debugging Intel 8086 assembly programs.
+Write a program, build it into a DOS `.EXE` with one key, then run it on an emulated
+IBM PC and step through it while you watch the source, registers, memory,
+disassembly and text screen.
 
-## Features
+![The debugger stopped at a data watchpoint](docs/images/debugger.png)
 
-- **CPU core** (`Microprocessor/`): the complete 8086 instruction set, including
-  segment-override/`REP`/`LOCK` prefixes, interrupts and the single-step trap.
-  It is checked against hardware-captured test vectors (see [Testing](#testing)).
-- **Disassembler** (`Microprocessor/disassembler.py`): TASM-style output for the
-  debugger; a second output style reproduces the test suite's instruction names
-  for all 3,064,000 vectors.
-- **Program loading**: DOS `.EXE` (MZ, with relocations and a PSP) and `.COM` files.
-- **BIOS** (`Microprocessor/bios.py`): an 80×25 colour text screen at
-  `B800:0000` (programs may also write video memory directly), `INT 10h` video
-  (00h–03h, 05h–0Ah, 0Eh, 0Fh, 13h), `INT 16h` keyboard (00h–02h, 10h–12h),
-  `INT 11h`, `INT 12h` and `INT 1Ah` (ticks, RTC time and date).
-- **DOS** (`Microprocessor/dos.py`, `dosfs.py`): `INT 20h` and `INT 21h`
-  - console: 01h, 02h, 06h–0Ch
-  - files: create/open/close/read/write/seek (3Ch–42h), delete (41h), rename
-    (56h), attributes (43h), IOCTL device info (44h/00h)
-  - directories: 39h–3Bh, 47h; find first/next (4Eh, 4Fh) with DTA (1Ah, 2Fh)
-  - drives (0Eh, 19h), memory (48h–4Ah), vectors (25h, 35h), date/time (2Ah,
-    2Ch), version (30h), exit (00h, 4Ch)
+- **Runs anywhere**: portable builds for Windows, macOS and Linux, with the JWasm
+  assembler included. Nothing to install.
+- **Source-level debugger**: step, run, pause, run to cursor, breakpoints in the
+  source or the disassembly, and the current line highlighted in your code.
+- **Data watchpoints**: stop when an instruction writes, reads or touches a variable,
+  and see which instruction did it with the old and new values.
+- **A real 8086**: the full instruction set, checked against 3,064,000 test vectors
+  captured from real hardware.
+- **DOS and BIOS**: text screen, keyboard, files and folders through `INT 10h`,
+  `INT 16h`, `INT 21h` and more, so ordinary DOS course programs run unchanged.
+- **Two assemblers**: JWasm (built in, MASM syntax) or Borland TASM/TLINK in DOSBox.
 
-  Drive C: is the program's folder; paths cannot leave it. Handles 0–2 are the
-  console.
-- **Debugger UI**:
-  - Step (F10), Run (F5), Pause (Shift+F5), Run to Cursor (F4)
-  - source view: the line being executed is highlighted in the editor, using
-    the listing (and, for TASM, the map file) the build writes next to the `.EXE`
-  - breakpoints: click the editor gutter, F9, or double-click a row in the
-    Disassembly view (source and disassembly share them)
-  - data watchpoints: stop when an instruction writes, reads or accesses a
-    variable (Watch dock, Ctrl+Shift+W, or right-click a memory cell). The log
-    shows the instruction and the old → new value. Addresses can be listing
-    symbols (`msg`, `count+2`), `DS:0010`, `ES:DI+2` or physical addresses.
-  - editable register table, four memory views (one per segment register)
-  - Screen view: program output appears there, and keys typed into it go to
-    the program. When a program waits for a key, Run pauses and resumes as
-    soon as you type.
+📖 **[User guide](docs/USER_GUIDE.md)** ([PDF](docs/USER_GUIDE.pdf)): installing, a
+first program, every part of the window, the debugger, the emulated PC and
+troubleshooting. The guide is also included in every release download.
 
 ## Download
 
-Portable builds for Windows, macOS (Apple silicon and Intel) and Linux are on
-the [Releases page](https://github.com/Gagandheep/8086-Simulator/releases).
-Unpack the archive and run the app inside; nothing needs to be installed and
-JWasm is included. The apps are not code-signed: on macOS, right-click the app
-and choose Open the first time; on Windows, SmartScreen may ask you to confirm.
+Get the portable app for your system from the
+[Releases page](https://github.com/Gagandheep/8086-Simulator/releases):
 
-To package the app yourself: `pip install pyinstaller -r requirements.txt`,
-`tools/build_jwasm.sh`, then `python tools/package.py --test`. Pushing a tag
-such as `v1.0.0`, or running the Release workflow from the Actions tab with a
-tag, makes it build, test and publish all of them.
+| System | Download |
+|---|---|
+| Windows 10/11 (x64) | `8086-Simulator-<version>-windows-x64.zip` |
+| macOS, Apple silicon | `8086-Simulator-<version>-macos-arm64.zip` |
+| macOS, Intel | `8086-Simulator-<version>-macos-x64.zip` |
+| Linux x64 (Ubuntu 22.04, Debian 12, Fedora 36 or later) | `8086-Simulator-<version>-linux-x64.tar.gz` |
 
-## Requirements (running from source)
+Unpack it and start `8086-Simulator` inside. The apps are not code-signed: on macOS,
+right-click the app and choose **Open** the first time; on Windows, SmartScreen may
+ask you to confirm under **More info**.
 
-- Python 3.8+
-- PyQt5: `pip install -r requirements.txt`
-- An assembler, only needed for building (either one):
-  - **JWasm** (recommended): open source, MASM-compatible, runs natively and
-    writes the DOS `.EXE` itself, so no linker or DOSBox is needed.
-    `tools/build_jwasm.sh` downloads and builds it into `external/jwasm/` (needs
-    git, make and gcc); or put `jwasm` (or `uasm`) on `PATH`, or set `JWASM` to
-    its executable. On Windows, download `jwasm.exe` from the
-    [JWasm releases](https://github.com/Baron-von-Riedesel/JWasm/releases).
-  - **TASM**: Turbo Assembler and Turbo Link run in
-    [DOSBox](https://www.dosbox.com/) (on `PATH`, or set `DOSBOX`).
-    `TASM.EXE` and `TLINK.EXE` are **not** included in this repository; copy
-    them into `external/tasm/BIN/`, or set `TASM_DIR` to a Turbo Assembler
-    directory that has them in its `BIN` folder. Tested with TASM 4.1 and TLINK 7.1.
+## A quick tour
 
-  **Assembler → Automatic** uses TASM when it is fully installed, else JWasm;
-  the Assembler menu (or the `ASSEMBLER` environment variable: `tasm`, `jwasm`,
-  `auto`) selects one explicitly.
+**1. Write and build.** Open `examples/sum.asm` and press **F7**. The assembler's
+output appears in the Log.
 
-## Usage
+![Editing and building](docs/images/build.png)
+
+**2. Debug.** Press **F8** to load the program. The line about to run is highlighted
+in the source and in the Disassembly. Press **F10** to step one instruction, **F5** to
+run, **F4** to run to the cursor, and click the editor gutter (or press **F9**) for a
+breakpoint.
+
+<p>
+  <img src="docs/images/registers.png" alt="Registers" height="250">
+  <img src="docs/images/disassembly.png" alt="Disassembly" height="250">
+</p>
+
+**3. Watch your data.** Add a watchpoint on a variable (`total`, `DS:0010`,
+`ES:DI+2`...) and Run: execution stops right after the instruction that changed it.
+Watched bytes are marked in the memory views, where you can also edit memory and
+right-click to watch a byte or word.
+
+<p>
+  <img src="docs/images/watch.png" alt="Watch dock" height="170">
+  <img src="docs/images/watchpoint-dialog.png" alt="Add Watchpoint dialog" height="170">
+</p>
+
+![Memory view with the watched variable marked](docs/images/memory.png)
+
+**4. See the output.** Text the program prints appears on the emulated 80×25 colour
+Screen. When the program waits for a key, click the Screen and type.
+
+![The Screen view](docs/images/screen.png)
+
+The [user guide](docs/USER_GUIDE.md) explains each of these in detail.
+
+## Running from source
+
+Needs Python 3.8+ and PyQt5.
 
 ```sh
+pip install -r requirements.txt
+tools/build_jwasm.sh       # builds JWasm into external/jwasm/ (needs git, make, gcc)
 python main.py
 ```
 
-1. Open or write an `.asm` file (see `examples/hello.asm`). With TASM, file
-   names need at most 8 characters without spaces (DOS).
-2. **Build** (F7) runs the assembler (JWasm, or TASM and TLINK); its output
-   appears in the Log dock.
-3. **Debug** (F8) loads the resulting `.EXE`. The current line is highlighted
-   in the source and in the Disassembly view. Set breakpoints by clicking the
-   gutter (or F9), add watchpoints in the Watch dock, then Step (F10), Run (F5)
-   or Run to Cursor (F4). Program output appears in the Screen view; click it
-   and type when the program reads the keyboard. The Log shows breakpoint and
-   watchpoint hits, and when the program exits and with which code.
+Instead of building JWasm you can put `jwasm` (or `uasm`) on `PATH` or set `JWASM` to
+its executable; on Windows, download `jwasm.exe` from the
+[JWasm releases](https://github.com/Baron-von-Riedesel/JWasm/releases).
 
-The emulator can also be used without the UI:
+**TASM (optional).** To build with Borland Turbo Assembler and Turbo Link instead,
+install [DOSBox](https://www.dosbox.com/) (on `PATH`, or set `DOSBOX`) and copy the
+contents of a Turbo Assembler `BIN` folder (with `TASM.EXE` and `TLINK.EXE`) into
+`external/tasm/BIN/`, or set `TASM_DIR` to a Turbo Assembler folder. TASM is not
+included in this repository. Tested with TASM 4.1 and TLINK 7.1. **Assembler →
+Automatic** uses TASM when it is installed, otherwise JWasm; the Assembler menu or the
+`ASSEMBLER` environment variable (`tasm`, `jwasm`, `auto`) picks one explicitly.
+
+The emulator also works without the UI:
 
 ```python
 from Microprocessor import Microprocessor
 from Microprocessor.dos import DOS
 
 cpu = Microprocessor()
-dos = DOS(cpu, output=print, root='.')   # drive C: is the current directory
-dos.bios.keyboard.push_text('typed input\r')  # keys for programs that read the keyboard
+dos = DOS(cpu, output=print, root='.')         # drive C: is the current directory
+dos.bios.keyboard.push_text('typed input\r')   # keys for programs that read the keyboard
 cpu.load_program('HELLO.EXE')
 cpu.run()          # returns early when the program waits for more keys
 print('exit code', cpu.exit_code)
 print(dos.bios.screen_text())
 ```
 
-`cpu.run()` stops when the program halts or needs a key that was not typed
-(`cpu.waiting_for_input`). Push more keys and call `run()` again to continue.
+## What is emulated
 
-## Testing
+- **CPU**: the complete 8086 instruction set, including segment-override, `REP` and
+  `LOCK` prefixes, interrupts and the single-step trap. Undocumented opcodes behave
+  like a real 8088. Clock timing is not emulated.
+- **Programs**: DOS `.EXE` (MZ, with relocations and a PSP) and `.COM` files.
+- **BIOS**: 80×25 colour text screen at `B800:0000`, `INT 10h` video (00h–03h,
+  05h–0Ah, 0Eh, 0Fh, 13h), `INT 16h` keyboard (00h–02h, 10h–12h), `INT 11h`, `INT 12h`
+  and `INT 1Ah` (ticks, RTC time and date).
+- **DOS**: `INT 20h` and `INT 21h` console I/O (01h, 02h, 06h–0Ch), files (3Ch–43h,
+  44h/00h, 56h), folders (39h–3Bh, 47h, 4Eh/4Fh with the DTA), drives, memory
+  (48h–4Ah), interrupt vectors, date/time, version and exit. Drive C: is the program's
+  folder.
+
+Not emulated: graphics modes, hardware interrupts and I/O ports, the 8087, and DOS
+functions such as running other programs. See
+[Known limitations](docs/USER_GUIDE.md#13-known-limitations) for the full list.
+
+## Development
 
 ```sh
-python -m unittest discover tests     # unit, loader, assembler and UI tests
+python -m unittest discover tests     # unit, loader, assembler and UI tests (UI tests run offscreen)
 tests/fetch_sst.sh                    # download the SingleStepTests 8088 suite once (~1.5 GB on disk)
 python tests/sst_runner.py            # 300 vectors per documented opcode
 python tests/sst_runner.py --all-statuses --limit 0   # every vector, incl. undocumented opcodes
 SST_TESTS=1 python -m unittest tests.test_disassembler  # disassembler vs. the vector names
 ```
 
-`tests/test_real_build.py` assembles `examples/hello.asm` with the real assemblers
-(JWasm, and TASM/TLINK in DOSBox), runs the result and follows it in the source;
-each case is skipped when its toolchain is not installed. `tests/fixtures` holds
-real TASM 4.1 / TLINK 7.1 output and `tests/fixtures/jwasm` real JWasm output
-(listings, maps, executables) for the tests that do not need the tools.
+`tests/test_real_build.py` assembles `examples/hello.asm` with the real assemblers and
+follows it in the source; each case is skipped when its toolchain is missing.
+`tests/fixtures` holds real TASM 4.1/TLINK 7.1 and JWasm output for the tests that do
+not need the tools. [SingleStepTests/8088](https://github.com/SingleStepTests/8088)
+holds test vectors captured from a real 8088 (same instruction set as the 8086); the
+emulator passes all 3,064,000 of them, not comparing flags the ISA leaves undefined.
 
-[SingleStepTests/8088](https://github.com/SingleStepTests/8088) contains test
-vectors captured from a real 8088, which has the same instruction set as the
-8086. The emulator passes all 3,064,000 of them. Flags the ISA leaves undefined
-are not compared; that includes the undefined bits of the FLAGS word a
-divide-error trap pushes, whose values come from the CPU's internal microcode loop.
+**Packaging.** `pip install pyinstaller -r requirements.txt`, `tools/build_jwasm.sh`,
+then `python tools/package.py --test` builds and self-tests the portable app for the
+current system. Running the Release workflow from the Actions tab with a tag such as
+`v1.1.0` (or pushing that tag) builds, tests and publishes all four builds.
 
-The UI tests need PyQt5 and run offscreen (`QT_QPA_PLATFORM=offscreen`).
-
-## Project layout
+**Docs.** `docs/USER_GUIDE.md` is the source of the guide. After editing it, run
+`python tools/build_guide_pdf.py` (needs pandoc and Playwright with Chromium) to
+regenerate the PDF. `xvfb-run -a -s "-screen 0 1600x1000x24" python
+tools/screenshots.py` retakes the screenshots in `docs/images/` from the real app.
 
 | Path | Contents |
 |---|---|
 | `main.py` | Application entry point |
-| `Microprocessor/__init__.py` | 8086 CPU core |
-| `Microprocessor/disassembler.py` | Disassembler |
-| `Microprocessor/program.py` | `.EXE`/`.COM` loader |
-| `Microprocessor/bios.py` | BIOS services, text screen, keyboard queue |
-| `Microprocessor/dos.py` | DOS `INT 20h`/`21h` services |
-| `Microprocessor/dosfs.py` | Host directory as drive C: |
-| `Microprocessor/watchpoints.py` | Address expressions and data watchpoints |
-| `Assembler/__init__.py` | Building with JWasm, or TASM/TLINK in DOSBox |
-| `Assembler/listing.py` | Listing (TASM, JWasm) and map parsing for the source view |
-| `tools/build_jwasm.sh` | Downloads and builds JWasm into `external/jwasm/` |
-| `tools/package.py` | Builds and self-tests the portable app (PyInstaller) |
-| `.github/workflows/release.yml` | Builds, tests and publishes the portable apps for a `v*` tag |
+| `Microprocessor/` | CPU core, disassembler, `.EXE`/`.COM` loader, BIOS, DOS, watchpoints |
+| `Assembler/` | Building with JWasm or TASM/TLINK, listing and map parsing for the source view |
 | `UI/` | PyQt5 main window |
+| `examples/` | Example programs |
+| `docs/` | User guide (Markdown and PDF) and screenshots |
+| `tools/` | JWasm build, packaging, screenshot and PDF scripts |
 | `tests/` | Unit tests and the SingleStepTests runner |
-| `external/tasm/` | Turbo Assembler support files and DOSBox config |
-
-## Known limitations
-
-**Emulated PC**
-- Text mode only: no graphics modes (CGA/EGA/VGA) and only display page 0.
-  Programs that switch to a graphics mode keep running but show nothing.
-- Only the BIOS and DOS functions listed under Features. Unsupported calls stop
-  the program with a message in the log. Not supported in particular:
-  - DOS file handle duplication (45h/46h), file sharing and locking modes
-  - FCB-based file functions (0Fh–28h)
-  - running another program (4Bh) and terminate-and-stay-resident (31h)
-  - DOS Ctrl+C / Ctrl+Break handling
-- One drive (C:), mapped to the program's folder; long host file names are only
-  reachable through their exact name, not as 8.3 aliases.
-- No hardware interrupts: no timer tick (`INT 08h`), no keyboard IRQ (`INT 09h`),
-  no PIC. `IN` from any port returns FFh and `OUT` is ignored (no PIT, speaker or
-  serial ports).
-- No 8087 coprocessor: `ESC` instructions decode their operand and do nothing.
-- Timing (clock cycles, prefetch queue, wait states) is not emulated.
-
-**Assemblers**
-- JWasm accepts MASM syntax, which most TASM programs use, but not TASM's Ideal
-  mode or TASM-only directives and options; such programs need TASM.
-- With JWasm on Linux/macOS, `INCLUDE` file names are case-sensitive
-  (`include io.mac` does not find `IO.MAC`).
-- Both builds produce `.EXE` files only (no `.COM` output), from a single source file.
-
-**Debugger**
-- The source view needs the `.LST` listing (and for TASM the `.MAP` file) from
-  the build; F7 writes them. It follows the main `.asm` file only: code from
-  `INCLUDE`d files and macro expansions maps to the line that included or invoked
-  it (JWasm) or to the nearest line of the main file (TASM). Only TASM 4.1/TLINK
-  7.1 and JWasm listings are understood; `.NOLIST`/`.XLIST` in the source hides
-  lines from the listing and breaks the line mapping.
-- Breakpoints and watchpoints use physical addresses. A watchpoint's address is
-  worked out when it is added (or when a program is loaded), so `ES:DI` watches
-  the address `ES:DI` had then; it does not follow later register changes.
-- Watchpoints report the instruction that accessed the memory, after it ran;
-  memory written by the emulated DOS/BIOS services counts as written by the `INT`.
-- No conditional breakpoints, hit counts or call stack view.
+| `external/tasm/BIN/` | DOSBox settings for TASM builds; put `TASM.EXE` and `TLINK.EXE` here |
+| `.github/workflows/release.yml` | Builds, tests and publishes the portable apps |

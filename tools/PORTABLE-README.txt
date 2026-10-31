@@ -9,7 +9,11 @@ Nothing needs to be installed: unpack this folder anywhere and start the app.
   macOS     8086-Simulator.app
 
 The JWasm assembler is included, so Build (F7) and Debug (F8) work right away.
-Try examples/hello.asm first.
+Try examples/hello.asm first, then examples/sum.asm with the debugger.
+
+The user guide is in the docs folder: docs/USER_GUIDE.pdf (or USER_GUIDE.md).
+It walks through a first program and explains the editor, the debugger,
+watchpoints, the emulated PC and its DOS/BIOS services, and troubleshooting.
 
 First start on macOS: the app is not signed by Apple, so macOS blocks it.
 Right-click (or Control-click) 8086-Simulator.app, choose Open, then Open

@@ -62,7 +62,7 @@ def run_pyinstaller(version):
 
 
 def stage(app, version):
-    """Lay out the folder users unpack: the app, the examples and a README."""
+    """Lay out the folder users unpack: the app, the examples, the user guide and a README."""
     folder = os.path.join(BUILD, 'stage', NAME)
     shutil.rmtree(os.path.dirname(folder), ignore_errors=True)
     os.makedirs(folder)
@@ -72,6 +72,11 @@ def stage(app, version):
     else:
         shutil.copytree(app, folder, dirs_exist_ok=True, symlinks=True)
     shutil.copytree(os.path.join(ROOT, 'examples'), os.path.join(folder, 'examples'))
+    # the user guide, as PDF and as Markdown with its screenshots
+    docs = os.path.join(folder, 'docs')
+    shutil.copytree(os.path.join(ROOT, 'docs', 'images'), os.path.join(docs, 'images'))
+    for name in ('USER_GUIDE.pdf', 'USER_GUIDE.md'):
+        shutil.copy(os.path.join(ROOT, 'docs', name), docs)
     with open(os.path.join(ROOT, 'tools', 'PORTABLE-README.txt'), encoding='utf-8') as f:
         readme = f.read().replace('{version}', version)
     with open(os.path.join(folder, 'README.txt'), 'w', encoding='utf-8', newline='\n') as f:
