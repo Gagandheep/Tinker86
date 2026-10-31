@@ -31,7 +31,13 @@ if [ "$(uname -s)" = Darwin ]; then
     printf '#include <stdlib.h>\n#include <alloca.h>\n' >"$work/shim/malloc.h"
     make_args=("inc_dirs=-Isrc/H -I$work/shim" "CC=clang -Wno-error=implicit-function-declaration -Wno-error=int-conversion")
 fi
-"$make" -s -C "$work/src" -f "$makefile" ${make_args[@]+"${make_args[@]}"} >"$work/build.log" 2>&1 || { cat "$work/build.log"; exit 1; }
+if [ "$(uname -s)" = Darwin ]; then
+    # CLUnix.mak links with GNU ld's -Map, which Apple's linker lacks: compile with it, link here
+    "$make" -s -k -C "$work/src" -f "$makefile" ${make_args[@]+"${make_args[@]}"} >"$work/build.log" 2>&1 || true
+    clang "$work/src/$(dirname "$output")"/*.o -o "$work/src/$output" >>"$work/build.log" 2>&1 || { cat "$work/build.log"; exit 1; }
+else
+    "$make" -s -C "$work/src" -f "$makefile" ${make_args[@]+"${make_args[@]}"} >"$work/build.log" 2>&1 || { cat "$work/build.log"; exit 1; }
+fi
 mkdir -p "$dest"
 cp "$work/src/$output" "$dest/$name"
 cp "$work/src/README.md" "$dest/README.md" 2>/dev/null || true
