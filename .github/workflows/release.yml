@@ -1,4 +1,4 @@
-# Builds the portable app for Linux, Windows and macOS, tests each archive, and
+# Builds the portable Tinker86 app for Linux, Windows and macOS, tests each archive, and
 # publishes them on the GitHub Releases page when a version tag (v*) is pushed.
 # Run it by hand (Actions > Release > Run workflow) to build and test; give it a tag such as
 # v1.0.0 to also publish a release with that tag on the current commit.
