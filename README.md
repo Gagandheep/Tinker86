@@ -3,7 +3,7 @@
 A desktop IDE for writing, assembling and debugging Intel 8086 assembly programs.
 Write a program, build it into a DOS `.EXE` with one key, then run it on an emulated
 IBM PC and step through it while you watch the source, registers, memory,
-disassembly and text screen.
+disassembly and text screen. (Formerly called 8086 Simulator.)
 
 ![The debugger stopped at a data watchpoint](docs/images/debugger.png)
 
