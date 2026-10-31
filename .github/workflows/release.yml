@@ -162,16 +162,16 @@ jobs:
           cd dist
           sha256sum * > SHA256SUMS.txt
           cat > notes.md <<NOTES
-          Portable builds of the 8086 Simulator: unpack the archive for your system and run the app inside. Nothing needs to be installed, and the JWasm assembler is included.
+          Portable builds of Tinker86: unpack the archive for your system and run the app inside. Nothing needs to be installed, and the JWasm assembler is included.
 
           | System | Download |
           |---|---|
-          | Windows 10/11 (x64) | \`8086-Simulator-$TAG-windows-x64.zip\` |
-          | macOS on Apple silicon | \`8086-Simulator-$TAG-macos-arm64.zip\` |
-          | macOS on Intel | \`8086-Simulator-$TAG-macos-x64.zip\` |
-          | Linux x64 (glibc 2.35+, e.g. Ubuntu 22.04+) | \`8086-Simulator-$TAG-linux-x64.tar.gz\` |
+          | Windows 10/11 (x64) | \`Tinker86-$TAG-windows-x64.zip\` |
+          | macOS on Apple silicon | \`Tinker86-$TAG-macos-arm64.zip\` |
+          | macOS on Intel | \`Tinker86-$TAG-macos-x64.zip\` |
+          | Linux x64 (glibc 2.35+, e.g. Ubuntu 22.04+) | \`Tinker86-$TAG-linux-x64.tar.gz\` |
 
-          The apps are not code-signed. On macOS, right-click the app and choose Open the first time (or run \`xattr -dr com.apple.quarantine 8086-Simulator.app\`). On Windows, SmartScreen may ask you to confirm under "More info". See README.txt in the archive for TASM setup.
+          The apps are not code-signed. On macOS, right-click the app and choose Open the first time (or run \`xattr -dr com.apple.quarantine Tinker86.app\`). On Windows, SmartScreen may ask you to confirm under "More info". See README.txt in the archive for TASM setup.
           NOTES
-          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "8086 Simulator $TAG" \
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "Tinker86 $TAG" \
             --notes-file notes.md --target "$GITHUB_SHA" *.zip *.tar.gz SHA256SUMS.txt

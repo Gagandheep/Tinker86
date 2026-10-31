@@ -52,7 +52,7 @@ def main():
         # gfm_auto_identifiers: the same anchors as on GitHub, so the contents links work
         subprocess.run(['pandoc', SOURCE, '-f', 'markdown+gfm_auto_identifiers-implicit_figures', '-t', 'html5',
                         '--standalone', '--no-highlight', '--embed-resources', '--resource-path', DOCS, '--css', css,
-                        '--metadata', 'pagetitle=8086 Simulator User Guide', '-o', html], check=True)
+                        '--metadata', 'pagetitle=Tinker86 User Guide', '-o', html], check=True)
         from playwright.sync_api import sync_playwright
         with sync_playwright() as playwright:
             # CHROMIUM: use an existing Chrome/Chromium instead of Playwright's own download
@@ -62,7 +62,7 @@ def main():
             page.pdf(path=TARGET, format='A4', print_background=True, display_header_footer=True,
                      header_template='<span></span>',
                      footer_template='<div style="font-size:8pt;color:#777;width:100%;text-align:center">'
-                                     '8086 Simulator User Guide &middot; <span class="pageNumber"></span></div>',
+                                     'Tinker86 User Guide &middot; <span class="pageNumber"></span></div>',
                      margin={'top': '18mm', 'bottom': '20mm', 'left': '16mm', 'right': '16mm'})
             browser.close()
     print('wrote', os.path.relpath(TARGET, ROOT))

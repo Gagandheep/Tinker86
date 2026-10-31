@@ -506,7 +506,7 @@ class UI_MainWindow:
 
     def retranslateUI(self, MainWindow):
         _translate = QtCore.QCoreApplication.translate
-        MainWindow.setWindowTitle(_translate("MainWindow", "8086 Emulator"))
+        MainWindow.setWindowTitle(_translate("MainWindow", "Tinker86"))
         self.menuFile.setTitle(_translate("MainWindow", "&File"))
         self.menuEdit.setTitle(_translate("MainWindow", "&Edit"))
         self.menuView.setTitle(_translate("MainWindow", "&View"))
@@ -1397,10 +1397,10 @@ class UI_MainWindow:
         self.tabUpdate()
 
     def about(self):
-        QtWidgets.QMessageBox.about(self.mainWidget, '8086 Emulator',
+        QtWidgets.QMessageBox.about(self.mainWidget, 'Tinker86',
                                     'Edit, assemble (JWasm, or TASM in DOSBox) and debug 8086 programs.\n\n'
                                     'User guide: docs/USER_GUIDE.pdf\n'
-                                    'https://github.com/Gagandheep/8086-Simulator')
+                                    'https://github.com/Gagandheep/Tinker86')
 
     @staticmethod
     def dialogUnsavedWarning(name):

@@ -5,7 +5,7 @@
 
 Needs PyInstaller and PyQt5 (pip install pyinstaller -r requirements.txt) and
 JWasm in external/jwasm/ (tools/build_jwasm.sh), which is bundled with the app.
-TASM is not bundled. Writes dist/8086-Simulator-VERSION-PLATFORM.zip (.tar.gz on
+TASM is not bundled. Writes dist/Tinker86-VERSION-PLATFORM.zip (.tar.gz on
 Linux). --test unpacks the archive into a temporary folder and runs the app's
 self-test from there (main.py --self-test).
 """
@@ -20,7 +20,7 @@ import tempfile
 import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-NAME = '8086-Simulator'
+NAME = 'Tinker86'
 BUILD = os.path.join(ROOT, 'build', 'pyinstaller')
 DIST = os.path.join(ROOT, 'dist')
 
@@ -49,7 +49,7 @@ def run_pyinstaller(version):
         '--workpath', BUILD, '--specpath', BUILD, '--distpath', os.path.join(BUILD, 'dist'),
         '--add-data', f'{os.path.join(ROOT, "examples")}{sep}examples',
         '--add-binary', f'{jwasm_binary()}{sep}external/jwasm',
-        '--osx-bundle-identifier', 'io.github.gagandheep.simulator8086',
+        '--osx-bundle-identifier', 'io.github.gagandheep.tinker86',
     ]
     for extra in ('License.html', 'README.md'):
         if os.path.exists(os.path.join(jwasm_dir, extra)):

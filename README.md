@@ -1,4 +1,4 @@
-# 8086 Simulator
+# Tinker86
 
 A desktop IDE for writing, assembling and debugging Intel 8086 assembly programs.
 Write a program, build it into a DOS `.EXE` with one key, then run it on an emulated
@@ -26,16 +26,16 @@ troubleshooting. The guide is also included in every release download.
 ## Download
 
 Get the portable app for your system from the
-[Releases page](https://github.com/Gagandheep/8086-Simulator/releases):
+[Releases page](https://github.com/Gagandheep/Tinker86/releases):
 
 | System | Download |
 |---|---|
-| Windows 10/11 (x64) | `8086-Simulator-<version>-windows-x64.zip` |
-| macOS, Apple silicon | `8086-Simulator-<version>-macos-arm64.zip` |
-| macOS, Intel | `8086-Simulator-<version>-macos-x64.zip` |
-| Linux x64 (Ubuntu 22.04, Debian 12, Fedora 36 or later) | `8086-Simulator-<version>-linux-x64.tar.gz` |
+| Windows 10/11 (x64) | `Tinker86-<version>-windows-x64.zip` |
+| macOS, Apple silicon | `Tinker86-<version>-macos-arm64.zip` |
+| macOS, Intel | `Tinker86-<version>-macos-x64.zip` |
+| Linux x64 (Ubuntu 22.04, Debian 12, Fedora 36 or later) | `Tinker86-<version>-linux-x64.tar.gz` |
 
-Unpack it and start `8086-Simulator` inside. The apps are not code-signed: on macOS,
+Unpack it and start `Tinker86` inside. The apps are not code-signed: on macOS,
 right-click the app and choose **Open** the first time; on Windows, SmartScreen may
 ask you to confirm under **More info**.
 

@@ -1,6 +1,6 @@
-# 8086 Simulator User Guide
+# Tinker86 User Guide
 
-The 8086 Simulator is a desktop IDE for learning and experimenting with Intel 8086
+Tinker86 is a desktop IDE for learning and experimenting with Intel 8086
 assembly language. You write a program in the editor, assemble it into a DOS `.EXE`
 with one key, and then run it on an emulated IBM PC while you watch the registers,
 memory, disassembly and text screen change one instruction at a time.
@@ -34,35 +34,35 @@ answers to common problems.
 ### 1.1 Portable app (recommended)
 
 Download the archive for your system from the
-[Releases page](https://github.com/Gagandheep/8086-Simulator/releases):
+[Releases page](https://github.com/Gagandheep/Tinker86/releases):
 
 | System | File |
 |---|---|
-| Windows 10/11 (x64) | `8086-Simulator-<version>-windows-x64.zip` |
-| macOS on Apple silicon (M1 and later) | `8086-Simulator-<version>-macos-arm64.zip` |
-| macOS on Intel | `8086-Simulator-<version>-macos-x64.zip` |
-| Linux x64 (glibc 2.35+, e.g. Ubuntu 22.04, Debian 12, Fedora 36 or later) | `8086-Simulator-<version>-linux-x64.tar.gz` |
+| Windows 10/11 (x64) | `Tinker86-<version>-windows-x64.zip` |
+| macOS on Apple silicon (M1 and later) | `Tinker86-<version>-macos-arm64.zip` |
+| macOS on Intel | `Tinker86-<version>-macos-x64.zip` |
+| Linux x64 (glibc 2.35+, e.g. Ubuntu 22.04, Debian 12, Fedora 36 or later) | `Tinker86-<version>-linux-x64.tar.gz` |
 
 Unpack it anywhere (your home folder, a USB stick) and start the app inside the
-`8086-Simulator` folder. Nothing is installed and nothing outside the folder is changed.
+`Tinker86` folder. Nothing is installed and nothing outside the folder is changed.
 
 | System | Start |
 |---|---|
-| Windows | double-click `8086-Simulator.exe` |
-| macOS | double-click `8086-Simulator.app` |
-| Linux | `./8086-Simulator` (or double-click it in your file manager) |
+| Windows | double-click `Tinker86.exe` |
+| macOS | double-click `Tinker86.app` |
+| Linux | `./Tinker86` (or double-click it in your file manager) |
 
 The JWasm assembler is included, so building and debugging work straight away. The
 folder also contains `examples/` with ready-to-run programs, `docs/` with this guide,
 and `README.txt`.
 
 **First start on macOS.** The app is not signed by Apple, so macOS refuses to open it
-on a double-click. Right-click (or Control-click) `8086-Simulator.app`, choose
+on a double-click. Right-click (or Control-click) `Tinker86.app`, choose
 **Open**, then **Open** again. You only need to do this once. If macOS says the app
 "is damaged", open Terminal in the unpacked folder and run:
 
 ```sh
-xattr -dr com.apple.quarantine 8086-Simulator.app
+xattr -dr com.apple.quarantine Tinker86.app
 ```
 
 **First start on Windows.** SmartScreen may warn about an unknown publisher. Choose
@@ -75,8 +75,8 @@ xattr -dr com.apple.quarantine 8086-Simulator.app
 You need Python 3.8 or newer.
 
 ```sh
-git clone https://github.com/Gagandheep/8086-Simulator.git
-cd 8086-Simulator
+git clone https://github.com/Gagandheep/Tinker86.git
+cd Tinker86
 pip install -r requirements.txt     # PyQt5
 tools/build_jwasm.sh                # downloads and builds JWasm into external/jwasm/ (needs git, make, gcc)
 python main.py
@@ -679,4 +679,4 @@ See [1.1](#11-portable-app-recommended).
 ---
 
 Source code, issues and new releases:
-<https://github.com/Gagandheep/8086-Simulator>
+<https://github.com/Gagandheep/Tinker86>

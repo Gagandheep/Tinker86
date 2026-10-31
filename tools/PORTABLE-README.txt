@@ -1,12 +1,12 @@
-8086 Simulator {version} (portable)
+Tinker86 {version} (portable)
 ===================================
 
 A desktop IDE for writing, assembling and debugging Intel 8086 programs.
 Nothing needs to be installed: unpack this folder anywhere and start the app.
 
-  Windows   8086-Simulator.exe
-  Linux     ./8086-Simulator
-  macOS     8086-Simulator.app
+  Windows   Tinker86.exe
+  Linux     ./Tinker86
+  macOS     Tinker86.app
 
 The JWasm assembler is included, so Build (F7) and Debug (F8) work right away.
 Try examples/hello.asm first, then examples/sum.asm with the debugger.
@@ -16,9 +16,9 @@ It walks through a first program and explains the editor, the debugger,
 watchpoints, the emulated PC and its DOS/BIOS services, and troubleshooting.
 
 First start on macOS: the app is not signed by Apple, so macOS blocks it.
-Right-click (or Control-click) 8086-Simulator.app, choose Open, then Open
+Right-click (or Control-click) Tinker86.app, choose Open, then Open
 again. If macOS says the app is damaged, run this once in Terminal from this
-folder:  xattr -dr com.apple.quarantine 8086-Simulator.app
+folder:  xattr -dr com.apple.quarantine Tinker86.app
 
 First start on Windows: SmartScreen may warn about an unknown publisher;
 choose "More info", then "Run anyway".
@@ -35,7 +35,7 @@ named "tasm" next to the app (or set TASM_DIR to it). Then pick TASM in the
 Assembler menu.
 
 Source code, documentation and issues:
-https://github.com/Gagandheep/8086-Simulator
+https://github.com/Gagandheep/Tinker86
 
 JWasm is distributed under the Sybase Open Watcom Public License; its license
 is included in the app bundle (external/jwasm/License.html).
