@@ -50,26 +50,22 @@ jobs:
           sudo apt-get install -y -q libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 \
             libxcb-xinerama0 libxcb-xkb1 libxkbcommon-x11-0 libxcb-shape0 libxcb-randr0 libxcb-cursor0 xvfb
 
-      - name: Install MinGW (Windows)
+      - name: Set up Visual C++ (Windows)
         if: runner.os == 'Windows'
-        uses: msys2/setup-msys2@v2
+        uses: ilammy/msvc-dev-cmd@v1
         with:
-          msystem: MINGW64
-          install: git make mingw-w64-x86_64-gcc mingw-w64-x86_64-make
+          arch: x64
 
       - name: Build JWasm
-        if: runner.os != 'Windows'
-        run: tools/build_jwasm.sh
-
-      - name: Build JWasm (Windows)
-        if: runner.os == 'Windows'
-        shell: msys2 {0}
         run: tools/build_jwasm.sh
 
       - name: Install Python packages
         run: python -m pip install pyinstaller==6.22.3 -r requirements.txt
 
+      # The unit tests stand in for the toolchains with shell scripts, so they run on Linux and
+      # macOS only; on Windows the self-test below builds and runs a program with the real JWasm.
       - name: Run the unit tests
+        if: runner.os != 'Windows'
         env:
           QT_QPA_PLATFORM: offscreen
         run: python -m unittest discover tests
