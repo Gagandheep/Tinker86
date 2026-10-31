@@ -21,6 +21,10 @@ case "$(uname -s)" in
     *)                    makefile=GccUnix.mak; output=build/GccUnixR/jwasm; name=jwasm; make=make ;;
 esac
 make_args=()
+mkdir -p "$work/src/$(dirname "$output")"  # GccWin.mak's mkdir has no -p
+case "$makefile" in
+    GccWin.mak) make_args=("LINK=gcc.exe -static") ;;  # no MinGW runtime DLLs needed next to jwasm.exe
+esac
 if [ "$(uname -s)" = Darwin ]; then
     # macOS has no <malloc.h>; its functions are in <stdlib.h> (alloca in <alloca.h>)
     mkdir -p "$work/shim"
