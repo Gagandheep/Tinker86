@@ -20,7 +20,14 @@ case "$(uname -s)" in
                           make=$(command -v mingw32-make || command -v make) ;;
     *)                    makefile=GccUnix.mak; output=build/GccUnixR/jwasm; name=jwasm; make=make ;;
 esac
-"$make" -s -C "$work/src" -f "$makefile" >"$work/build.log" 2>&1 || { cat "$work/build.log"; exit 1; }
+make_args=()
+if [ "$(uname -s)" = Darwin ]; then
+    # macOS has no <malloc.h>; its functions are in <stdlib.h> (alloca in <alloca.h>)
+    mkdir -p "$work/shim"
+    printf '#include <stdlib.h>\n#include <alloca.h>\n' >"$work/shim/malloc.h"
+    make_args=("inc_dirs=-Isrc/H -I$work/shim" "CC=clang -Wno-error=implicit-function-declaration -Wno-error=int-conversion")
+fi
+"$make" -s -C "$work/src" -f "$makefile" ${make_args[@]+"${make_args[@]}"} >"$work/build.log" 2>&1 || { cat "$work/build.log"; exit 1; }
 mkdir -p "$dest"
 cp "$work/src/$output" "$dest/$name"
 cp "$work/src/README.md" "$dest/README.md" 2>/dev/null || true
