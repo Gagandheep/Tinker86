@@ -23,7 +23,9 @@ esac
 make_args=()
 mkdir -p "$work/src/$(dirname "$output")"  # GccWin.mak's mkdir has no -p
 case "$makefile" in
-    GccWin.mak) make_args=("LINK=gcc.exe -static") ;;  # no MinGW runtime DLLs needed next to jwasm.exe
+    # GCC 15 defaults to C23, where JWasm's own bool typedef is an error; link statically so
+    # jwasm.exe needs no MinGW runtime DLLs
+    GccWin.mak) make_args=("c_flags=-D__NT__ -DNDEBUG -O2 -fomit-frame-pointer -std=gnu99" "LINK=gcc.exe -static") ;;
 esac
 if [ "$(uname -s)" = Darwin ]; then
     # macOS has no <malloc.h>; its functions are in <stdlib.h> (alloca in <alloca.h>)
